@@ -1,14 +1,20 @@
 # This fork: Strata on 2x CMP 50HX (sm_75) + 2x Xeon E5-2670 v2 (AVX1)
 
-Upstream is [Niko1221/Strata](https://github.com/Niko1221/Strata). This branch starts from upstream `main`
-(0.1.41, `fb58e0d`) and adds a short list of patches for this box. The numbers for each patch are in its commit
-message; the older notes in [AVX1_SM75_PLAN.md](AVX1_SM75_PLAN.md) can be out of date.
+Upstream is [Niko1221/Strata](https://github.com/Niko1221/Strata); this fork is
+[xrip/Strata](https://github.com/xrip/Strata), a direct GitHub fork of it:
+
+- `main`: an exact copy of upstream `main`, nothing of ours (GitHub's "Sync fork" works on it without conflicts);
+- `cmp50hx`: this branch, upstream `main` (0.1.41, `fb58e0d`) plus a short list of patches for this box;
+- `pr/*`: each generic patch on top of upstream `main`, sent upstream as a PR.
+
+The numbers for each patch are in its commit message; the older notes in [AVX1_SM75_PLAN.md](AVX1_SM75_PLAN.md) can
+be out of date. The earlier fork (xrip/strata-dual-cmp50hx, branch `avx1-sm75-opt`) is retired.
 
 ## Syncing with upstream
 
 ```sh
 git fetch upstream
-git merge upstream/main          # the history is shared, so a plain merge works
+git merge upstream/main          # on cmp50hx; the history is shared, so a plain merge works
 ```
 
 Rules that keep the next merge small:
@@ -63,4 +69,34 @@ Base: `build/strata` of `avx1-sm75-opt` (`b44bb09`). This branch built as `build
 - Not tried: `STRATA_GDN_CHUNKED=2` (slower on cards under 128 SMs in upstream's own measurements) and
   `STRATA_FS_SLOTS` (lost on every box upstream measured; the decode cache here hits ~97-99 %).
 
-Chosen: `STRATA_BF16_TC=1`, set by the config's `"env"` (`~/strata-sync/strata-iq3_xxs.json` on the box).
+### Second series: on top of `STRATA_BF16_TC=1`
+
+The same setup; every arm with `STRATA_BF16_TC=1`.
+
+| arm | median incremental read | note |
+|---|---:|---|
+| `STRATA_BF16_TC=1`, run 2 | 764.5 tok/s | run 1: 764.0; decode the same |
+| + `--pipeline-windows 2` | 757.2 tok/s (-1 %) | decode on 100+ token answers 72.0 vs 72.3: no gain on top of BF16_TC |
+| + CPU prompt share (`STRATA_PREFILL_CPU_SHARE=auto`, `_MAX=8192`) | 791.8 tok/s (+3.6 %) | cold 34K TTFT 20.53 -> 19.59 s |
+| live config (adaptive swaps on) | 759.0 tok/s | the same as swaps off within the noise |
+| + `--adapt-async 1` | - | does not switch on without `--resident-experts` (the log says so): stopped |
+
+The CPU prompt share was checked for answer quality with `prefill_probe.py` (24 prompts of 8K-24K tokens, 48 greedy
+tokens, a fresh server each): against `STRATA_BF16_TC=1` alone 20/24 answers identical, 23/24 with the same start
+(first difference at character 133, median). A rerun of the reference: 24/24 and 24/24. For scale, a different prompt
+chunk size that Strata accepts (`--prefill 4096`) gave 17/24 and 23/24 on this box earlier.
+
+Not tried: `STRATA_EXCHANGE_ROTATE=1` (needs `--adapt-async 1`) and `STRATA_ADAPT_LAG=2` (decode only, with the GPU
+cache already hitting 97-99 %); agentbench gives too few long answers to see a few percent of decode.
+
+## Settings for this box
+
+Against `avx1-sm75-opt`: prompt reading +8 % (+12 % with the CPU share), decode about +19 % (few samples).
+Answers are not word for word the old fork's (these switches round differently); they were read and are correct.
+
+Build: `-DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_ISA_FLOOR=avx`, GCC 14, CUDA 13.3. Config
+(`strata-<model>.json`), on top of what setup writes (`--layer-split auto`, `--kv int8`, `--spec 4`, `--mtp`):
+
+```json
+"env": {"STRATA_BF16_TC": "1", "STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_CPU_SHARE_MAX": "8192"}
+```
