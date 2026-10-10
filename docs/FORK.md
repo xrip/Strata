@@ -3,9 +3,9 @@
 Upstream is [Niko1221/Strata](https://github.com/Niko1221/Strata); this fork is
 [xrip/Strata](https://github.com/xrip/Strata), a direct GitHub fork of it:
 
-- `main`: an exact copy of upstream `main`, nothing of ours (GitHub's "Sync fork" works on it without conflicts);
-- `cmp50hx`: this branch, upstream `main` (0.1.41, `fb58e0d`) plus a short list of patches for this box;
-- `pr/*`: each generic patch on top of upstream `main`, sent upstream as a PR.
+- `main`: upstream `main` (0.1.41, `fb58e0d`) plus a short list of patches for this box;
+- `pr/*`: each generic patch on top of upstream `main`, sent upstream as a PR;
+- tags `cmp50hx-*`: measured snapshots (`cmp50hx-2026-10-10`: the settings below).
 
 The numbers for each patch are in its commit message; the older notes in [AVX1_SM75_PLAN.md](AVX1_SM75_PLAN.md) can
 be out of date. The earlier fork (xrip/strata-dual-cmp50hx, branch `avx1-sm75-opt`) is retired.
@@ -14,7 +14,7 @@ be out of date. The earlier fork (xrip/strata-dual-cmp50hx, branch `avx1-sm75-op
 
 ```sh
 git fetch upstream
-git merge upstream/main          # on cmp50hx; the history is shared, so a plain merge works
+git merge upstream/main          # on main; the history is shared, so a plain merge works
 ```
 
 Rules that keep the next merge small:
