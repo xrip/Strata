@@ -95,6 +95,14 @@ disk 6.4 s (read 3.6 s: 2,639 MiB at 761 MB/s; GPU restore 0.87 s; in RAM it was
 at 80-370 MB/s while the next prompt was read; a request waited for a write once (0.9 s). No file was left after the
 engine ended. Sent upstream as PR #1937.
 
+`--conversation-disk-persist` (also in PR #1937): the conversations outlive the engine. The files are bound to the
+session files' identity (model, engine version, settings); an index per conversation lets the next start take them in;
+no time limit (the budget alone); on QUIT the current and every parked conversation go to the disk first (the server
+waits up to 300 s; the engine ignores a terminal's SIGINT so the save is not cut short). On the box (2026-10-11): the
+save at the stop 6.8 s (a 165K-token current conversation and two parked 42K ones), the next start took in 3
+conversations (4,311 MiB), and all three came back from the disk with the same answers - the 165K one in 6.7 s instead
+of 77.6 s.
+
 ## Dropped in the sync (from the `avx1-sm75-opt` branch)
 
 | commit | why |
