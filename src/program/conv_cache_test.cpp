@@ -75,9 +75,6 @@ int main() {
               "spread: every candidate pinned - the plain policy");
         check(spread_victim(lens.data(), stamps.data(), 2, 1, nullptr, nullptr) == 0,
               "spread: two items, one slot - the plain policy");
-        const std::vector<int64_t> shuffled = {400, 100, 300, 200};   // the chain 100 < 200 < 300 < 400, out of order
-        check(spread_victim(shuffled.data(), stamps.data(), 4, 3, nullptr, nullptr) == 3,
-              "spread: the order of the items does not matter (200 leaves: 100..300 over 300 back)");
     }
     {
         const std::vector<uint64_t> stamps = {1, 2, 3, 4, 5, 6, 7};   // chat A: root + six turns, one over

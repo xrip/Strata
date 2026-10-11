@@ -10073,7 +10073,8 @@ int main(int argc, char** argv) {
                 }
             auto parked = conversations.best(ids, req_imgs, want_cvec);
             // what a checkpoint at the right token would reuse: the most tokens this prompt has in common with a held one
-            const int64_t shared = std::max({live_ok ? strata::core::shared_prefix(live, ids) : int64_t(0), conversations.shared_tokens(ids),
+            const int64_t shared = std::max({live_ok ? strata::core::shared_prefix(live, ids) : int64_t(0),
+                                             conversations.shared_tokens(ids),
                                              conv_disk.enabled() ? conv_disk.shared_tokens(ids) : int64_t(0)});
             std::optional<strata::core::SavedConversation> incoming;
             // the disk tier holds a longer prefix than the session, a --batch slot or the RAM cache: restore that one
