@@ -52,9 +52,41 @@ or the RAM cache:
   the RAM cache's oldest conversations go to the disk first, as when parking;
 - the folder's files of this tier (`strata-conv-*`) are removed at start and when the engine ends.
 
-The parked RAM image is ~26 KB per token here, so a 155K-token conversation is a ~4 GB write and read (seconds on
-an NVMe instead of ~77 s of prompt reading). Unit test: `conversation_disk_test` (CPU only, with
-`-DSTRATA_BUILD_CONVERSATION_TESTS=ON`). Not yet run on the box.
+Latency, by design:
+
+- **No disk wait on a switch.** An evicted conversation only joins a write queue; the tier's own thread (CPU nice 10
+  on Linux, below the serving threads) writes it (O_DIRECT where the filesystem takes it, so the expert arena's page
+  cache is not pushed out). A conversation requested again before its write started comes back from RAM, with no disk
+  at all (a "RAM hit"); one being written is waited for, then read.
+- **RAM:** a queued image holds its RAM until its write ends. When RAM is short (parking a conversation, or reading
+  one back), the engine first waits for the queued writes (their RAM comes back) and only then evicts more.
+- **Smaller files:** only the live state and the deepest checkpoint are written (the session files' rule: the
+  earlier checkpoints serve edits further back and cost ~118 MB each here).
+- mmap would not help: the restore validates the whole image before the first device write (fail-closed), so every
+  byte is read first anyway, and a host-to-device copy from mapped file pages is slower than from ordinary RAM.
+
+Diagnostics, all on stderr as `strata serve: conversation disk: ...` (with the upstream `conversation cache:` lines
+for parking and the GPU restore):
+
+```
+on: DIR, budget 32768 MiB, 30 min per conversation, background writes; N stale files removed
+queued 155000 tokens (4012 MiB in RAM until written; queue 1, 4012 MiB)
+wrote 155000 tokens: 3480 MiB in 2 files, 1900 ms (1920 MB/s); on disk 1, 3480 MiB; 0 removed for the budget, 0 expired
+RAM hit: 26000 tokens back from the write queue (700 MiB, no disk) in 0.1 ms
+disk hit: 155000 tokens, 3480 MiB in 2 files, 1700 ms (2146 MB/s)[, after N ms waiting for its write]
+waited 850 ms for 1 queued write (their RAM was needed)
+removed 1 conversation older than 30 min
+totals: queued, written (MiB, MB/s), RAM hits, disk hits (MiB, MB/s), prompt tokens given back, waits for RAM (ms),
+        expired, removed for the budget, failed writes/reads; on disk (MiB), queue
+```
+
+(the numbers above show the format, they are not measurements). The impact of a hit: the tokens given back against
+the engine's prompt speed (~2,000 tok/s cold here), against the read plus the upstream `conversation cache: restored
+... in N ms` (GPU restore).
+
+The parked RAM image is ~26 KB per token here, so a 155K-token conversation is ~4 GB in RAM and somewhat less on the
+disk (deepest checkpoint only). Unit test: `conversation_disk_test` (CPU only, with
+`-DSTRATA_BUILD_CONVERSATION_TESTS=ON`; 52 checks; also clean under ThreadSanitizer). Not yet run on the box.
 
 ## Dropped in the sync (from the `avx1-sm75-opt` branch)
 

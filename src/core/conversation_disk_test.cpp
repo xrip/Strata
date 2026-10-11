@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,14 +51,15 @@ ConversationCheckpoint checkpoint(size_t tokens, uint8_t seed, int32_t first = 1
     return c;
 }
 
-// one stage's image: `tokens` live tokens from `first`, a checkpoint at half of them, two K/V layers
+// one stage's image: `tokens` live tokens from `first`, checkpoints at a half and a quarter of them, two K/V layers
 SavedConversation image(size_t tokens, uint8_t seed, int32_t first = 1000, int64_t lo = 0, int64_t hi = 48) {
     SavedConversation s;
     for (size_t i = 0; i < s.geometry.size(); ++i) s.geometry[i] = int64_t(100 + i);
     s.layer_lo = lo; s.layer_hi = hi;
     s.cvec = false;
     s.live = checkpoint(tokens, seed, first);
-    s.checkpoints.push_back(checkpoint(tokens / 2, uint8_t(seed + 9), first));
+    s.checkpoints.push_back(checkpoint(tokens / 2, uint8_t(seed + 9), first));    // the deepest first
+    s.checkpoints.push_back(checkpoint(tokens / 4, uint8_t(seed + 19), first));
     for (int layer = 0; layer < 2; ++layer) {
         ConversationKv kv;
         kv.format = 2; kv.cells = 1024; kv.heads = 2; kv.head_dim = 256; kv.page_size = 64; kv.pooled_rows = 9;
@@ -75,6 +78,13 @@ SavedConversation image(size_t tokens, uint8_t seed, int32_t first = 1000, int64
 SavedConversation split_image(size_t tokens, uint8_t seed, int32_t first = 1000) {
     SavedConversation s = image(tokens, seed, first, 0, 26);
     s.stage_images.push_back(image(tokens, uint8_t(seed + 50), first, 26, 48));
+    return s;
+}
+
+// what the tier keeps of an image: the live state and the deepest checkpoint, in every stage
+SavedConversation trimmed(SavedConversation s) {
+    s.checkpoints.resize(1);
+    for (auto& st : s.stage_images) st.checkpoints.resize(1);
     return s;
 }
 
@@ -121,18 +131,35 @@ struct FakeClock {
     ConversationDiskTier::Clock::time_point t{};
     std::function<ConversationDiskTier::Clock::time_point()> fn() { return [this] { return t; }; }
 };
+
+std::vector<std::string> lines;   // the tier's diagnostic lines
+std::mutex lines_m;
+ConversationDiskOptions opts(const fs::path& dir, uint64_t budget, int64_t ttl_s, bool background) {
+    ConversationDiskOptions o;
+    o.dir = dir.string();
+    o.budget_bytes = budget;
+    o.ttl_s = ttl_s;
+    o.background = background;
+    o.log = [](const std::string& l) { std::lock_guard<std::mutex> g(lines_m); lines.push_back(l); };
+    return o;
+}
+bool logged(const char* what) {
+    std::lock_guard<std::mutex> g(lines_m);
+    for (const auto& l : lines) if (l.find(what) != std::string::npos) return true;
+    return false;
+}
 }  // namespace
 
 int main() {
     const fs::path dir = fs::temp_directory_path() / ("strata_conversation_disk_test_" + std::to_string(std::rand()));
     fs::remove_all(dir);
     const uint64_t GiB = 1ull << 30;
+    std::string e;
 
     {   // off without a folder or a budget
-        ConversationDiskTier off({"", GiB, 1800, 0});
-        std::string e;
-        check(off.open(e) && !off.enabled(), "no folder: off, not an error");
-        ConversationDiskTier off2({dir.string(), 0, 1800, 0});
+        ConversationDiskTier off(opts("", GiB, 1800, true));
+        check(off.open(e) && !off.enabled() && !off.put(image(10, 1)), "no folder: off, not an error");
+        ConversationDiskTier off2(opts(dir, 0, 1800, true));
         check(off2.open(e) && !off2.enabled(), "no budget: off");
     }
 
@@ -141,92 +168,111 @@ int main() {
         touch(dir / (std::string(ConversationDiskTier::file_prefix()) + "0123-1-0.bin"));
         touch(dir / ("." + std::string(ConversationDiskTier::file_prefix()) + "0123-1-0.bin.abcd.tmp"));
         touch(dir / "keep.bin");
-        ConversationDiskTier tier({dir.string(), GiB, 1800, 0});
-        std::string e;
+        ConversationDiskTier tier(opts(dir, GiB, 1800, true));
         check(tier.open(e) && tier.enabled(), "open");
-        check(tier_files(dir) == 0, "open removes the tier's old files and temporary files");
+        check(tier_files(dir) == 0 && logged("2 stale files removed"), "open removes the tier's old and temporary files");
         check(fs::exists(dir / "keep.bin"), "open keeps other files");
         fs::remove(dir / "keep.bin");
     }
 
-    {   // write, match, read back exactly (a layer split: two files), files gone
-        FakeClock clock;
-        ConversationDiskTier tier({dir.string(), GiB, 1800, 0}, clock.fn());
-        std::string e;
+    {   // background write, match, read back exactly (a layer split: two files; the deepest checkpoint only)
+        ConversationDiskTier tier(opts(dir, GiB, 1800, true));
         check(tier.open(e), "open 2");
-        const SavedConversation original = split_image(600, 1);
-        SavedConversation copy = split_image(600, 1);
-        const auto r = tier.put(std::move(copy));
-        check(r.stored && r.bytes > (34u << 20) && tier.size() == 1 && tier.bytes() == r.bytes, "put a split image");
-        check(tier_files(dir) == 2, "one file per stage");
+        const SavedConversation expect = trimmed(split_image(600, 1));
+        check(tier.put(split_image(600, 1)), "put a split image");
+        tier.wait_idle();
+        check(tier.size() == 1 && tier_files(dir) == 2 && !tier.pending(), "written: one file per stage");
+        check(logged("wrote 600 tokens") && logged("in 2 files"), "the write is logged");
         const auto live = tier.best(prompt_of(700), {}, false);
-        check(live.tokens == 600 && live.live && live.index == 0, "best: the live state as a prefix");
+        check(live.tokens == 600 && live.live && !live.queued && live.id != 0, "best: the live state as a prefix");
         const auto ck = tier.best([] { auto p = prompt_of(300); p.push_back(7); return p; }(), {}, false);
-        check(ck.tokens == 300 && !ck.live, "best: a checkpoint as a prefix");
-        check(tier.best(prompt_of(700), {}, true).tokens == 0, "best: another control-vector state does not match");
+        check(ck.tokens == 300 && !ck.live, "best: the deepest checkpoint as a prefix");
+        check(tier.best([] { auto p = prompt_of(150); p.push_back(7); return p; }(), {}, false).tokens == 0,
+              "best: the earlier checkpoints are not kept");
         const auto whole = tier.best(prompt_of(600), {}, false);
-        check(whole.tokens == 300 && !whole.live, "best: the whole prompt held is no prefix (its last token is read): the checkpoint");
+        check(whole.tokens == 300 && !whole.live, "best: the whole prompt held is no prefix (its last token is read)");
+        check(tier.best(prompt_of(700), {}, true).tokens == 0, "best: another control-vector state does not match");
         check(tier.best(prompt_of(700, 5), {}, false).tokens == 0, "best: other tokens do not match");
         SavedConversation back;
-        uint64_t read = 0;
-        check(tier.take(live.index, back, read, e) && read == r.bytes, "take");
-        check(same(back, original), "read back exactly, the later stage's image included");
+        check(tier.take(live.id, live.tokens, back, e), "take");
+        check(same(back, expect), "read back exactly: both stages, the live state and the deepest checkpoint");
         check(tier.size() == 0 && tier.bytes() == 0 && tier_files(dir) == 0, "take removes the entry and its files");
-        check(tier.written() == 1 && tier.read_back() == 1, "counters");
+        const auto st = tier.stats();
+        check(st.queued == 1 && st.written == 1 && st.disk_hits == 1 && st.ram_hits == 0 && st.tokens_back == 600 &&
+              st.bytes_read == st.bytes_written && st.bytes_written > (34u << 20), "counters");
+        check(logged("disk hit: 600 tokens") && logged("totals:"), "the hit and the totals are logged");
+    }
+
+    {   // a queued image comes back from RAM: the writer is held at its first write
+        std::promise<void> release;
+        std::shared_future<void> gate = release.get_future().share();
+        auto o = opts(dir, GiB, 1800, true);
+        o.before_write = [gate] { gate.wait(); };
+        ConversationDiskTier tier(std::move(o));
+        check(tier.open(e), "open 3");
+        check(tier.put(image(400, 2)), "put a (the writer takes it and waits)");
+        check(tier.put(image(400, 3, 5000)), "put b (queued behind a)");
+        check(tier.pending(), "pending while the writer waits");
+        const auto b = tier.best(prompt_of(450, 5000), {}, false);
+        check(b.tokens == 400 && b.queued, "b matches in the queue");
+        SavedConversation back;
+        check(tier.take(b.id, b.tokens, back, e) && same(back, trimmed(image(400, 3, 5000))), "b back from RAM");
+        check(tier.stats().ram_hits == 1 && logged("RAM hit: 400 tokens"), "a RAM hit, logged");
+        release.set_value();
+        tier.wait_idle();
+        check(!tier.pending() && tier.size() == 1 && tier_files(dir) == 1, "a written after the release");
+        check(tier.best(prompt_of(450, 5000), {}, false).tokens == 0, "b is gone from the tier");
     }
 
     {   // the budget: the oldest goes for a new one; an image above the budget is refused
-        ConversationDiskTier tier({dir.string(), 25ull << 20, 1800, 0});   // one ~17 MiB image, not two
-        std::string e;
-        check(tier.open(e), "open 3");
-        check(tier.put(image(400, 2)).stored, "first fits");
-        const auto r = tier.put(image(500, 3, 5000));
-        check(r.stored && r.evicted == 1 && tier.size() == 1 && tier.evicted() == 1, "second evicts the first");
+        ConversationDiskTier tier(opts(dir, 25ull << 20, 1800, false));   // one ~17 MiB image, not two
+        check(tier.open(e), "open 4");
+        check(tier.put(image(400, 4)) && tier.size() == 1, "first fits (inline write)");
+        check(tier.put(image(500, 5, 5000)) && tier.size() == 1 && tier.stats().evicted == 1, "second evicts the first");
         check(tier.best(prompt_of(450), {}, false).tokens == 0 && tier.best(prompt_of(600, 5000), {}, false).tokens == 500,
               "the newer one stays");
-        ConversationDiskTier small({dir.string(), 1ull << 20, 1800, 0});
-        check(small.open(e) && !small.put(image(400, 4)).stored && small.size() == 0, "above the budget: refused");
+        ConversationDiskTier small(opts(dir, 1ull << 20, 1800, false));
+        check(small.open(e) && !small.put(image(400, 6)) && small.size() == 0, "above the budget: refused");
     }
     check(tier_files(dir) == 0, "the tier removes its files when it ends");
 
     {   // the time limit
         FakeClock clock;
-        ConversationDiskTier tier({dir.string(), GiB, 30 * 60, 0}, clock.fn());
-        std::string e;
-        check(tier.open(e), "open 4");
-        check(tier.put(image(400, 5)).stored, "put a");
+        ConversationDiskTier tier(opts(dir, GiB, 30 * 60, false), clock.fn());
+        check(tier.open(e), "open 5");
+        check(tier.put(image(400, 7)), "put a");
         clock.t += std::chrono::minutes(20);
-        check(tier.put(image(400, 6, 7000)).stored, "put b, 20 min later");
+        check(tier.put(image(400, 8, 7000)), "put b, 20 min later");
         clock.t += std::chrono::minutes(9);
         check(tier.expire() == 0 && tier.size() == 2, "29 min: both kept");
         clock.t += std::chrono::minutes(2);
-        check(tier.expire() == 1 && tier.size() == 1 && tier.expired() == 1, "31 min: the first is removed");
+        check(tier.expire() == 1 && tier.size() == 1 && tier.stats().expired == 1, "31 min: the first is removed");
         check(tier.best(prompt_of(450), {}, false).tokens == 0 && tier.best(prompt_of(450, 7000), {}, false).tokens == 400,
               "the younger one stays");
         check(tier_files(dir) == 1, "the expired file is deleted");
         clock.t += std::chrono::minutes(30);
-        check(tier.put(image(300, 7, 9000)).stored && tier.size() == 1, "a put removes the expired ones first");
+        check(tier.put(image(300, 9, 9000)) && tier.size() == 1, "a write removes the expired ones first");
     }
 
     {   // a read the RAM preflight refuses: nothing restored, the files are gone anyway
-        ConversationDiskTier tier({dir.string(), GiB, 1800, 0});
-        std::string e;
-        check(tier.open(e) && tier.put(split_image(400, 8)).stored, "put for a refused read");
+        ConversationDiskTier tier(opts(dir, GiB, 1800, false));
+        check(tier.open(e) && tier.put(split_image(400, 10)), "put for a refused read");
+        const auto m = tier.best(prompt_of(450), {}, false);
         SavedConversation back;
-        uint64_t read = 0;
-        const bool ok = tier.take(0, back, read, e, [](uint64_t, std::string& why) { why = "no RAM"; return false; });
+        const bool ok = tier.take(m.id, m.tokens, back, e, [](uint64_t, std::string& why) { why = "no RAM"; return false; });
         check(!ok && back.kv.empty() && back.stage_images.empty() && tier.size() == 0 && tier_files(dir) == 0,
               "refused read: empty image, entry and files gone");
+        check(tier.stats().read_failed == 1, "a failed read is counted");
     }
 
     {   // the RAM cache's evictions go to the disk tier (set_on_evict)
-        ConversationDiskTier tier({dir.string(), GiB, 1800, 0});
-        std::string e;
-        check(tier.open(e), "open 5");
+        ConversationDiskTier tier(opts(dir, GiB, 1800, true));
+        check(tier.open(e), "open 6");
         ConversationCache cache(GiB, 1);
         cache.set_on_evict([&](SavedConversation&& s) { tier.put(std::move(s)); });
-        check(cache.put(image(400, 9)), "park a");
-        check(cache.put(image(400, 10, 8000)), "park b: a leaves RAM");
+        check(cache.put(image(400, 11)), "park a");
+        check(cache.put(image(400, 12, 8000)), "park b: a leaves RAM");
+        tier.wait_idle();
         check(cache.size() == 1 && cache.evictions() == 1 && tier.size() == 1, "a is on the disk");
         check(tier.best(prompt_of(450), {}, false).tokens == 400, "a matches on the disk");
         check(cache.best(prompt_of(450, 8000), {}, false).tokens == 400, "b stays in RAM");
