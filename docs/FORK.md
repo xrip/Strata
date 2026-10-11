@@ -32,7 +32,7 @@ Rules that keep the next merge small:
 | `1eb1010` | prompt attention, int8 K/V: next chunk in registers, K and V in one buffer (Turing) | none (same bits) |
 | `94292d6` | gate/up MMQ reads the experts in place (a patched copy of llama.cpp's `mmq.cuh` in the build tree) | `STRATA_MMQ_INPLACE=0` = old |
 | `e8f68e0`, `cc3fd60`, `3a5e69e`, `8f93be3` | `dual3090/verify/`: agentbench (gate and compare), flashbench corpus, prefill_probe; `prefill_mmq_bench` | tools |
-| (branch `conversation-disk-tier`) | the disk tier of the parked conversations (`conversation_disk.hpp`), below | `--conversation-disk-dir DIR` (off by default) |
+| `3fcb526`..`f72cce9` (upstream PR #1937) | the disk tier of the parked conversations (`conversation_disk.hpp`), below | `--conversation-disk-dir DIR` (off by default) |
 
 ### The disk tier of the parked conversations
 
@@ -86,7 +86,14 @@ the engine's prompt speed (~2,000 tok/s cold here), against the read plus the up
 
 The parked RAM image is ~26 KB per token here, so a 155K-token conversation is ~4 GB in RAM and somewhat less on the
 disk (deepest checkpoint only). Unit test: `conversation_disk_test` (CPU only, with
-`-DSTRATA_BUILD_CONVERSATION_TESTS=ON`; 55 checks; also clean under ThreadSanitizer). Not yet run on the box.
+`-DSTRATA_BUILD_CONVERSATION_TESTS=ON`; 55 checks; also clean under ThreadSanitizer).
+
+On the box (2026-10-11; gate config + this box's switches, one RAM slot so that a third conversation goes to the
+disk, greedy, 48 tokens): the follow-up answers of two 42K-token conversations restored from the disk (and from RAM)
+were the same text as the live conversations' answers. A 165,557-token conversation: cold read 77.8 s, back from the
+disk 6.4 s (read 3.6 s: 2,639 MiB at 761 MB/s; GPU restore 0.87 s; in RAM it was 3,364 MB). The background writes ran
+at 80-370 MB/s while the next prompt was read; a request waited for a write once (0.9 s). No file was left after the
+engine ended. Sent upstream as PR #1937.
 
 ## Dropped in the sync (from the `avx1-sm75-opt` branch)
 
