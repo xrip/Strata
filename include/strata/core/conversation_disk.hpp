@@ -1,16 +1,7 @@
-// The disk tier of --serve's parked conversations (--conversation-disk-dir): a conversation the RAM cache evicts
-// (ConversationCache::set_on_evict) is written to the disk instead of dropped, kept for a limited time
-// (--conversation-disk-ttl-min) within a byte budget (--conversation-disk-mib), and read back when a request continues
-// it.  Each image of a layer split (the first stage's and SavedConversation::stage_images) is one session file
-// (conversation_file.hpp), so the files carry the same checks as session files.  The files belong to this process
-// only: their identity is a random number of this run, and the folder's files of this tier are removed at start and
-// when the tier ends.  Pure host code: no CUDA.
-//
-// Latency: put() only queues the image; a background thread (lower CPU priority on Linux) writes it, so a
-// conversation switch never waits for the disk.  A queued image that a request wants before its write started is
-// handed back from RAM (no disk at all).  Until its write ends a queued image still holds its RAM: a caller short of
-// RAM waits for the queue (wait_idle) before it evicts more.  Only the live state and the deepest checkpoint are
-// written (the session files' rule: the earlier checkpoints serve edits further back and cost ~118 MB each).
+// The disk tier of --serve's parked conversations (--conversation-disk-dir): the RAM cache's evictions
+// (ConversationCache::set_on_evict) are written to session files (conversation_file.hpp, one per layer-split stage)
+// by a background thread and read back when a request continues them, within a time limit and a byte budget.
+// Only this process reads its files back; the folder's files of this tier are removed at start and at the end.
 #pragma once
 
 #include "strata/core/conversation_cache.hpp"
@@ -33,7 +24,6 @@ struct ConversationDiskOptions {
     uint64_t budget_bytes = 0;       ///< at most this many bytes of files; 0: off
     int64_t ttl_s = 30 * 60;         ///< a file older than this is removed (<= 0: kept until the budget evicts it)
     uint64_t min_free_bytes = 0;     ///< a write needs the file plus this much free on the disk (session preflight)
-    bool background = true;          ///< write on the background thread (false: put() writes before it returns)
     /// Called with every diagnostic line (no trailing newline), from the caller's or the writer's thread.
     std::function<void(const std::string&)> log;
     /// Tests: called on the writer thread before each write starts.
@@ -63,15 +53,14 @@ public:
     /// writer.  False (and the tier stays off) when the folder cannot be used.
     bool open(std::string& error);
 
-    /// Queues `image` for the disk (or writes it now without the background thread).  The image is the tier's from
-    /// here on; its RAM is freed when its write ends, stored or not.  False when the tier is off.
+    /// Queues `image` for the writer; its RAM is freed when its write ends, stored or not.  Only the live state and
+    /// the deepest checkpoint are written (the session files' rule).  False when the tier is off or over budget.
     bool put(SavedConversation&& image);
 
     struct Match {
         uint64_t id = 0;        ///< the entry (stable while the writer runs; 0 = none)
         int64_t tokens = 0;
         bool live = false;
-        bool queued = false;    ///< still in the write queue: take() hands it back from RAM
     };
     /// The longest prefix of `prompt` an entry holds (its live state or its checkpoint), queued or on the disk, as
     /// ConversationCache::best; ties prefer the newest entry.
@@ -79,18 +68,18 @@ public:
     Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
         std::lock_guard<std::mutex> lock(m_);
         Match best;
-        auto scan = [&](const Entry& e, bool queued) {
+        auto scan = [&](const Entry& e) {
             if (e.cvec != cvec) return;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
-                if (n > best.tokens || (n == best.tokens && n > 0 && e.id > best.id)) best = {e.id, n, live, queued};
+                if (n > best.tokens || (n == best.tokens && n > 0 && e.id > best.id)) best = {e.id, n, live};
             };
             consider(e.live, true);
             for (const auto& c : e.checkpoints) consider(c, false);
         };
-        for (const auto& e : entries_) scan(e, false);
-        for (const auto& j : queue_) scan(j.entry, true);
-        if (writing_) scan(writing_entry_, false);   // its file appears when the write ends: take() waits for it
+        for (const auto& e : entries_) scan(e);
+        for (const auto& j : queue_) scan(j.entry);
+        if (writing_) scan(writing_entry_);   // its file appears when the write ends: take() waits for it
         return best;
     }
 

@@ -69,7 +69,7 @@ Diagnostics, all on stderr as `strata serve: conversation disk: ...` (with the u
 for parking and the GPU restore):
 
 ```
-on: DIR, budget 32768 MiB, 30 min per conversation, background writes; N stale files removed
+on: DIR, budget 32768 MiB, 30 min per conversation; N stale files removed
 queued 155000 tokens (4012 MiB in RAM until written; queue 1, 4012 MiB)
 wrote 155000 tokens: 3480 MiB in 2 files, 1900 ms (1920 MB/s); on disk 1, 3480 MiB; 0 removed for the budget, 0 expired
 RAM hit: 26000 tokens back from the write queue (700 MiB, no disk) in 0.1 ms
@@ -86,7 +86,7 @@ the engine's prompt speed (~2,000 tok/s cold here), against the read plus the up
 
 The parked RAM image is ~26 KB per token here, so a 155K-token conversation is ~4 GB in RAM and somewhat less on the
 disk (deepest checkpoint only). Unit test: `conversation_disk_test` (CPU only, with
-`-DSTRATA_BUILD_CONVERSATION_TESTS=ON`; 52 checks; also clean under ThreadSanitizer). Not yet run on the box.
+`-DSTRATA_BUILD_CONVERSATION_TESTS=ON`; 55 checks; also clean under ThreadSanitizer). Not yet run on the box.
 
 ## Dropped in the sync (from the `avx1-sm75-opt` branch)
 

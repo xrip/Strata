@@ -137,10 +137,9 @@ bool ConversationDiskTier::open(std::string& error) {
         return false;
     }
     open_ = true;
-    if (options_.background) thread_ = std::thread([this] { writer(); });
-    log(fmt("on: %s, budget %.0f MiB, %lld min per conversation, %s writes; %zu stale files removed",
-            options_.dir.c_str(), mib(options_.budget_bytes), (long long) (options_.ttl_s / 60),
-            options_.background ? "background" : "inline", stale));
+    thread_ = std::thread([this] { writer(); });
+    log(fmt("on: %s, budget %.0f MiB, %lld min per conversation; %zu stale files removed", options_.dir.c_str(),
+            mib(options_.budget_bytes), (long long) (options_.ttl_s / 60), stale));
     return true;
 }
 
@@ -196,10 +195,6 @@ bool ConversationDiskTier::put(SavedConversation&& image) {
         std::lock_guard<std::mutex> lock(m_);
         job.entry.id = ++next_id_;
         ++stats_.queued;
-    }
-    if (!options_.background) {
-        write(job);
-        return true;
     }
     size_t depth = 0;
     uint64_t queued_bytes = 0;
