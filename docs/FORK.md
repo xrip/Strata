@@ -103,6 +103,21 @@ save at the stop 6.8 s (a 165K-token current conversation and two parked 42K one
 conversations (4,311 MiB), and all three came back from the disk with the same answers - the 165K one in 6.7 s instead
 of 77.6 s.
 
+### Checkpoints spread back from the end (`--prompt-cache-spread`, opt-in)
+
+The 6 checkpoints rotate by least recent use and every turn adds one at its end, so after a few short turns they all
+sit in the last ~1-2K tokens. The pi coding agent (with pi-blackhole) rewrites its history a few thousand tokens back
+now and then; the engine then resumed from the system prompt. In the live log (2026-10-11), with the new "read again"
+line: a 210,528-token prompt the same as a held conversation for 204,349 tokens reused 9,525 and read 201,003 again
+(100 s); another, 42K back, read all 205,253 (101 s). With the flag the kept points thin out geometrically (after 200
+turns of 1,000 tokens: 0, 1K, 3K, 8K, 43K, 200K before the end; an edit 6K back reads 8K again, 42K back 43K). Same
+number of checkpoints, no more RAM.
+
+On the box (an 82,593-token conversation grown in 2-turn steps, a turn ~6 steps back rewritten): resumed from 73,610
+tokens in 10.2 s instead of 40.0 s cold, and with the expert placement fixed (`--adapt-swaps 0 --pcie-frac 0.17`) the
+same greedy answer as the cold read, word for word. Without fixing it two cold reads differ too (the placement moves
+with timing): that run-to-run variation is the engine's, not the cache's.
+
 ## Dropped in the sync (from the `avx1-sm75-opt` branch)
 
 | commit | why |
@@ -191,7 +206,8 @@ Build: `-DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_ISA_FLOOR
 and in `"args"` the conversation cache, so an agent's main conversation and its sub-agents do not evict each other:
 
 ```json
-"--conversation-cache-mib", "8192", "--conversation-cache-slots", "3", "--conversation-cache-min-tokens", "32768"
+"--conversation-cache-mib", "8192", "--conversation-cache-slots", "3", "--conversation-cache-min-tokens", "32768",
+"--conversation-disk-dir", "/home/xrip/strata/conversation-cache", "--conversation-disk-persist", "--prompt-cache-spread"
 ```
 
 Without it the engine keeps one conversation: in an agent session every switch between the main conversation
