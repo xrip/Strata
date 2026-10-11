@@ -10001,6 +10001,7 @@ int main(int argc, char** argv) {
             }
             cur = ids;
             const Clock::time_point r0 = Clock::now();
+            double disk_read_ms = 0, disk_ms = 0;   // reused from the disk: its read, and the read plus the restore
             // ---- where this request starts reading: the live session, or a checkpoint, whose tokens AND pictures are
             // exactly the start of this prompt - at most n - 1 of them, the last token is always the first window
             auto starts_with = [&](const std::vector<int32_t>& pre, const std::vector<ImgKey>& pre_imgs) -> bool {
@@ -10076,7 +10077,9 @@ int main(int argc, char** argv) {
                     };
                     strata::core::SavedConversation image;
                     std::string disk_err;
+                    const auto d0 = Clock::now();
                     if (conv_disk.take(on_disk.id, on_disk.tokens, image, disk_err, admit)) {
+                        disk_read_ms = std::chrono::duration<double, std::milli>(Clock::now() - d0).count();
                         incoming.emplace(std::move(image));
                         parked.tokens = on_disk.tokens;
                         parked.live = on_disk.live;
@@ -10223,9 +10226,14 @@ int main(int argc, char** argv) {
                     conversations.retain(std::move(incoming->kv), int64_t(live.size()), std::move(stage_kv));
                 }
                 incoming.reset(); // Running-state/checkpoint copies are no longer needed.
-                std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms; parked=%zu bytes=%zu\n",
-                             (long long) resume, from_live ? "live" : "checkpoint",
-                             std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
+                const double restore_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                char from_disk[64] = "";
+                if (disk_read_ms > 0) {
+                    disk_ms = disk_read_ms + restore_ms;
+                    std::snprintf(from_disk, sizeof from_disk, ", from the disk in %.0f ms with the read", disk_ms);
+                }
+                std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms%s; parked=%zu bytes=%zu\n",
+                             (long long) resume, from_live ? "live" : "checkpoint", restore_ms, from_disk,
                              conversations.size(), conversations.bytes());
             }
             if (want_cvec != cvec_cached) {
@@ -12014,9 +12022,11 @@ int main(int argc, char** argv) {
                 std::snprintf(read_txt, sizeof(read_txt), "%lld of %lld", (long long) read_n, (long long) fresh);
             else
                 std::snprintf(read_txt, sizeof(read_txt), "%lld", (long long) fresh);
-            std::fprintf(stderr, "strata serve: prompt %lld tokens = %lld reused + %s read in %.0f ms (%.1f tok/s), "
+            char reused_from[48] = "";
+            if (disk_ms > 0) std::snprintf(reused_from, sizeof reused_from, " (from the disk in %.1f s)", disk_ms / 1000);
+            std::fprintf(stderr, "strata serve: prompt %lld tokens = %lld reused%s + %s read in %.0f ms (%.1f tok/s), "
                                  "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld, %zu checkpoints%s\n",
-                         (long long) n, (long long) resume, read_txt, prompt_ms,
+                         (long long) n, (long long) resume, reused_from, read_txt, prompt_ms,
                          prompt_ms > 0 ? 1000.0 * read_n / prompt_ms : 0.0, (long long) produced_n, decode_ms,
                          decode_ms > 0 ? 1000.0 * produced_n / decode_ms : 0.0, (long long) draft_accepted,
                          (long long) draft_offered, checks.size(), cancelled ? " (cancelled)" : "");
