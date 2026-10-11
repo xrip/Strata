@@ -24,8 +24,11 @@
 // the oldest checkpoint leaves - the previous behaviour, one slot = the newest point only.
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <numeric>
+#include <vector>
 
 namespace strata::program::conv_cache {
 
@@ -75,6 +78,35 @@ inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap, con
     for (size_t i = 2; i < n; ++i)
         if (stamps[i] < stamps[v]) v = i;
     return v;
+}
+
+/// --prompt-cache-spread: the chain item whose removal leaves the smallest gap for its distance from the newest one,
+/// so the kept points thin out geometrically towards the root.  A client that rewrites its history d tokens before the
+/// end then reads about d tokens again instead of everything after the root, which least recent use gives once a few
+/// short turns have rotated the older points out.  `lens` are the items' token counts.  Never the shortest (the root),
+/// the longest or a pinned item; the tail rule is as above.  Without a candidate: the plain policy.
+inline size_t spread_victim(const int64_t* lens, const uint64_t* stamps, size_t n, int64_t cap, const bool* tail,
+                            const bool* pinned) {
+    if (n >= 3 && cap >= 2) {
+        std::vector<size_t> at(n);   // the items by length: the chain from the root
+        std::iota(at.begin(), at.end(), size_t(0));
+        std::sort(at.begin(), at.end(), [&](size_t a, size_t b) { return lens[a] < lens[b]; });
+        auto candidate = [&](size_t i) { return !(pinned && pinned[i]); };
+        if (tail != nullptr)
+            for (size_t k = 1; k + 1 < n; ++k)
+                if (tail[at[k]] && candidate(at[k])) return at[k];
+        const int64_t end = lens[at[n - 1]];
+        size_t v = n;
+        double best = 0;
+        for (size_t k = 1; k + 1 < n; ++k) {
+            if (!candidate(at[k])) continue;
+            const int64_t before = lens[at[k - 1]];
+            const double gap = double(lens[at[k + 1]] - before) / double(end - before);
+            if (v == n || gap < best) { v = at[k]; best = gap; }
+        }
+        if (v != n) return v;
+    }
+    return eviction_victim(stamps, n, cap, tail, pinned);
 }
 
 }  // namespace strata::program::conv_cache
