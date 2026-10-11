@@ -38,6 +38,20 @@ ConversationCheckpoint key_of(const ConversationCheckpoint& c) {
     return k;
 }
 
+// The payload is the conversation its index names: the same keys and control-vector state, in every stage.
+bool holds(const SavedConversation& s, const ConversationCheckpoint& live,
+           const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
+    auto same = [](const ConversationCheckpoint& x, const ConversationCheckpoint& y) {
+        return x.ids == y.ids && x.imgs == y.imgs;
+    };
+    if (s.cvec != cvec || !same(s.live, live) || s.checkpoints.size() != checkpoints.size()) return false;
+    for (size_t i = 0; i < checkpoints.size(); ++i)
+        if (!same(s.checkpoints[i], checkpoints[i])) return false;
+    for (const auto& stage : s.stage_images)
+        if (!holds(stage, live, checkpoints, cvec)) return false;
+    return true;
+}
+
 // Only the live state and the deepest checkpoint go to the disk (the session files' rule).  With a layer split each
 // later stage keeps the same checkpoint (the split keeps the order); a stage whose list does not line up drops them all.
 void keep_deepest_checkpoint(SavedConversation& img) {
@@ -505,7 +519,8 @@ bool ConversationDiskTier::take(uint64_t id, int64_t tokens, SavedConversation& 
         error = "the entry is gone (its write failed, or it expired)";
         return false;
     }
-    const std::vector<std::string> files = entries_[index].files;
+    const Entry want = entries_[index];
+    const std::vector<std::string>& files = want.files;
     remove_locked(index, false);   // the entry goes now; its files are deleted after the read, whatever it gives
     lock.unlock();
     const SessionFileIdentity fid = file_identity();
@@ -521,6 +536,10 @@ bool ConversationDiskTier::take(uint64_t id, int64_t tokens, SavedConversation& 
         if (!ok) break;
         if (k == 0) out = std::move(part);
         else out.stage_images.push_back(std::move(part));
+    }
+    if (ok && !holds(out, want.live, want.checkpoints, want.cvec)) {
+        ok = false;
+        error = "the files hold another conversation than their index";
     }
     for (const auto& f : files) remove_file(f);
     const double ms = ms_since(t0);

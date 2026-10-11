@@ -1,5 +1,6 @@
 // CPU-only tests for the disk tier of the parked conversations (include/strata/core/conversation_disk.hpp).
 // Built with -DSTRATA_BUILD_CONVERSATION_TESTS=ON; no CUDA, no model.
+#include <algorithm>
 #include "strata/core/conversation_disk.hpp"
 
 #include <chrono>
@@ -329,6 +330,27 @@ int main() {
         {
             ConversationDiskTier tier(persistent(3));
             check(tier.open(e) && tier.size() == 0 && tier_files(dir) == 0, "persist: a damaged index is refused");
+        }
+        {
+            ConversationDiskTier tier(persistent(4));
+            check(tier.open(e) && tier.put(image(400, 23)) && tier.put(image(400, 24, 6000)),
+                  "persist: put a and b, the same length");
+        }
+        std::vector<fs::path> bins;   // a's image first: the names differ only in the id
+        for (const auto& f : fs::directory_iterator(dir))
+            if (f.path().extension() == ".bin") bins.push_back(f.path());
+        std::sort(bins.begin(), bins.end());
+        check(bins.size() == 2, "persist: two images");
+        fs::copy_file(bins[0], bins[1], fs::copy_options::overwrite_existing);   // b's index now names a's image
+        {
+            ConversationDiskTier tier(persistent(4));
+            check(tier.open(e) && tier.size() == 2, "persist: both taken in");
+            const auto m = tier.best(prompt_of(450, 6000), {}, false);
+            check(m.tokens == 400, "persist: b matches by its index");
+            SavedConversation back;
+            check(!tier.take(m.id, m.tokens, back, e) && back.kv.empty() && logged("hold another conversation"),
+                  "persist: a's image under b's index is refused, never restored as b");
+            check(tier.best(prompt_of(450), {}, false).tokens == 400, "persist: a is still there");
         }
     }
 
