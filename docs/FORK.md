@@ -32,6 +32,29 @@ Rules that keep the next merge small:
 | `1eb1010` | prompt attention, int8 K/V: next chunk in registers, K and V in one buffer (Turing) | none (same bits) |
 | `94292d6` | gate/up MMQ reads the experts in place (a patched copy of llama.cpp's `mmq.cuh` in the build tree) | `STRATA_MMQ_INPLACE=0` = old |
 | `e8f68e0`, `cc3fd60`, `3a5e69e`, `8f93be3` | `dual3090/verify/`: agentbench (gate and compare), flashbench corpus, prefill_probe; `prefill_mmq_bench` | tools |
+| (branch `conversation-disk-tier`) | the disk tier of the parked conversations (`conversation_disk.hpp`), below | `--conversation-disk-dir DIR` (off by default) |
+
+### The disk tier of the parked conversations
+
+With `--conversation-cache-mib` the engine keeps a few conversations in RAM; one it evicts (slots or RAM budget
+full) was dropped, and an agent that came back to it read its whole prompt again. With `--conversation-disk-dir DIR`
+the evicted conversation is written to `DIR` instead, and a request that continues it reads it back (the same
+validation and restore as a RAM-parked one) when the disk holds a longer prefix than the session, a `--batch` slot
+or the RAM cache:
+
+- each image of a layer split (the first stage's and every later stage's) is one session file, written and read
+  with the session files' code (`conversation_file.hpp`: atomic write, size and hash checks, the free-space preflight
+  `--session-min-free-mib`); their identity is a random number of this run, so only this process reads them back;
+- `--conversation-disk-ttl-min N` (default 30): a conversation stays on the disk N minutes after it was written
+  (removed at the next request or write after that); `--conversation-disk-mib N` (default 32768): oldest first out;
+- read back = removed from the disk (the session holds it again, and it is parked again on the next switch);
+- RAM for a read: the RAM preflight with the parking floor (`--conversation-cache-min-free-mib`); when RAM is short
+  the RAM cache's oldest conversations go to the disk first, as when parking;
+- the folder's files of this tier (`strata-conv-*`) are removed at start and when the engine ends.
+
+The parked RAM image is ~26 KB per token here, so a 155K-token conversation is a ~4 GB write and read (seconds on
+an NVMe instead of ~77 s of prompt reading). Unit test: `conversation_disk_test` (CPU only, with
+`-DSTRATA_BUILD_CONVERSATION_TESTS=ON`). Not yet run on the box.
 
 ## Dropped in the sync (from the `avx1-sm75-opt` branch)
 
