@@ -69,11 +69,6 @@ void remove_file(const std::string& path) {
     fs::remove(fs::path(path), ec);
 }
 
-bool ends_with(const std::string& s, const char* tail) {
-    const size_t n = std::strlen(tail);
-    return s.size() >= n && s.compare(s.size() - n, n, tail) == 0;
-}
-
 // The index file of a persistent entry: native-endian fields (the session files refuse a big-endian build too),
 // counts before arrays.
 constexpr uint64_t kIndexMagic = 0x3158444943525453ull;   // "STRCIDX1"
@@ -240,16 +235,14 @@ bool ConversationDiskTier::read_index(const std::string& path, Entry& e) const {
     return true;
 }
 
-std::string ConversationDiskTier::take_in_earlier_runs(size_t& stale) {
+std::string ConversationDiskTier::scan_folder(size_t& stale, std::error_code& ec) {
     std::vector<Entry> found;
     std::vector<std::string> others;
     size_t refused = 0;
-    std::error_code ec;
     for (fs::directory_iterator it(fs::path(options_.dir), ec), end; !ec && it != end; it.increment(ec)) {
-        const std::string name = it->path().filename().string();
-        if (!it->is_regular_file(ec) || !tier_file(name)) continue;
+        if (!it->is_regular_file(ec) || !tier_file(it->path().filename().string())) continue;
         Entry e;
-        const bool index = name[0] != '.' && ends_with(name, ".idx");
+        const bool index = it->path().extension() == ".idx";
         const bool taken = index && read_index(it->path().string(), e);
         if (taken) found.push_back(std::move(e));
         else others.push_back(it->path().string());
@@ -296,34 +289,24 @@ bool ConversationDiskTier::open(std::string& error) {
     ec.clear();
 #endif
     size_t stale = 0;
-    std::string earlier;
-    if (options_.persist) {
-        earlier = take_in_earlier_runs(stale);
-    } else {
-        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
-            if (it->is_regular_file(ec) && tier_file(it->path().filename().string())) {
-                std::error_code rm;
-                if (fs::remove(it->path(), rm)) ++stale;
-            }
-        if (ec) {
-            error = "cannot list the folder " + options_.dir + ": " + ec.message();
-            return false;
-        }
-        earlier = fmt("%lld min per conversation", (long long) (options_.ttl_s / 60));
+    const std::string taken_in = scan_folder(stale, ec);
+    if (ec) {
+        error = "cannot list the folder " + options_.dir + ": " + ec.message();
+        return false;
     }
     open_ = true;
     thread_ = std::thread([this] { writer(); });
+    const std::string kept = options_.persist ? taken_in : fmt("%lld min per conversation", (long long) (options_.ttl_s / 60));
     log(fmt("on: %s, budget %.0f MiB, %s; %zu stale files removed", options_.dir.c_str(), mib(options_.budget_bytes),
-            earlier.c_str(), stale));
+            kept.c_str(), stale));
     return true;
 }
 
 void ConversationDiskTier::remove_locked(size_t index, bool delete_files) {
     Entry& e = entries_.at(index);
-    if (delete_files) {
-        if (!e.index.empty()) remove_file(e.index);   // first: a half-removed entry is not taken in again
+    if (!e.index.empty()) remove_file(e.index);   // first, always: an entry gone from the list is not taken in again
+    if (delete_files)
         for (const auto& f : e.files) remove_file(f);
-    }
     bytes_ -= e.bytes;
     entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
 }
@@ -523,7 +506,6 @@ bool ConversationDiskTier::take(uint64_t id, int64_t tokens, SavedConversation& 
         return false;
     }
     const std::vector<std::string> files = entries_[index].files;
-    if (!entries_[index].index.empty()) remove_file(entries_[index].index);   // a later start does not take it in
     remove_locked(index, false);   // the entry goes now; its files are deleted after the read, whatever it gives
     lock.unlock();
     const SessionFileIdentity fid = file_identity();

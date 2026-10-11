@@ -17,6 +17,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -137,7 +138,7 @@ private:
     SessionFileIdentity file_identity() const;
     bool write_index(Entry& e, std::string& error) const;
     bool read_index(const std::string& path, Entry& e) const;
-    std::string take_in_earlier_runs(size_t& stale);         // persist: open()'s scan; returns its log part
+    std::string scan_folder(size_t& stale, std::error_code& ec);   // open(): take in or remove; its log part
 
     ConversationDiskOptions options_;
     std::function<Clock::time_point()> now_;

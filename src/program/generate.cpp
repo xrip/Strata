@@ -7717,11 +7717,12 @@ int main(int argc, char** argv) {
             // the session files' identity: a later start with the same model and settings takes the files in
             std::string id_err;
             disk_opts.persist = session_identity(disk_opts.identity, id_err, {});
-            disk_opts.ttl_s = 0;
-            if (!disk_opts.persist)
+            if (disk_opts.persist) {
+                disk_opts.ttl_s = 0;   // the budget alone
+                std::signal(SIGINT, SIG_IGN);   // Ctrl+C reaches the engine too: the server's QUIT ends it, after the save
+            } else {
                 std::fprintf(stderr, "strata serve: conversation disk: not persistent (%s)\n", id_err.c_str());
-            else   // Ctrl+C in the server's terminal reaches the engine too: the server's QUIT ends it, after the save
-                std::signal(SIGINT, SIG_IGN);
+            }
         }
         strata::core::ConversationDiskTier conv_disk(std::move(disk_opts));
         if (!o.conversation_disk_dir.empty() && !conversations.enabled())
