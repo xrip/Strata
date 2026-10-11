@@ -91,11 +91,19 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
 
 ## Syncs
 
-- 0.1.42 (`61b3fb5d`, 235 upstream commits): conflicts only in our AVX1 Q2_0 patch, which upstream replaced (see above);
-  the tokenizer cache follows upstream's new cache style (set up in `__init__`). Built for sm_75 in the box's toolchain
-  (CUDA 13.3, GCC 14, AVX floor) and the CPU tests passed; not measured on the box yet. New upstream defaults that
-  touch this box: `STRATA_ROUTE_TAIL_SKIP=7` on CUDA serve, layer splits included (answers differ slightly from 0.1.41;
-  `=0` turns it off) - an A/B arm for the next box test, with and without it.
+- 0.1.42 (`61b3fb5d`, 235 upstream commits): conflicts only in our AVX1 Q2_0 patch, which upstream replaced (see
+  above); the tokenizer cache follows upstream's new cache style (set up in `__init__`). Box A/B 2026-10-11 (agentbench
+  34K -> 130K, gate config, `STRATA_BF16_TC=1` + the CPU prompt share in every arm):
+
+  | arm | median incremental read | decode, answers of 100+ tokens |
+  |---|---:|---:|
+  | 0.1.41 snapshot (`cmp50hx-2026-10-10`) | 808.2 tok/s | 69.3 tok/s |
+  | 0.1.42, `STRATA_ROUTE_TAIL_SKIP` default (7) | 808.7 tok/s | 70.4 tok/s |
+  | 0.1.42, `STRATA_ROUTE_TAIL_SKIP=0` | 810.5 tok/s | 70.2 tok/s |
+
+  No regression. The tail skip was on (all 22 answers differ from `=0`) but gives nothing here (97-99 % of the routed
+  experts are in VRAM, and it only saves work on the missed ones), so this box runs `STRATA_ROUTE_TAIL_SKIP=0`, which
+  keeps the model's exact output.
 
 ## Settings for this box
 
@@ -106,5 +114,19 @@ Build: `-DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_ISA_FLOOR
 (`strata-<model>.json`), on top of what setup writes (`--layer-split auto`, `--kv int8`, `--spec 4`, `--mtp`):
 
 ```json
-"env": {"STRATA_BF16_TC": "1", "STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_CPU_SHARE_MAX": "8192"}
+"env": {"STRATA_BF16_TC": "1", "STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_CPU_SHARE_MAX": "8192",
+        "STRATA_ROUTE_TAIL_SKIP": "0"}
 ```
+
+and in `"args"` the conversation cache, so an agent's main conversation and its sub-agents do not evict each other:
+
+```json
+"--conversation-cache-mib", "8192", "--conversation-cache-slots", "3", "--conversation-cache-min-tokens", "32768"
+```
+
+Without it the engine keeps one conversation: in an agent session every switch between the main conversation
+(~155K tokens) and a sub-agent re-read the whole prompt (~77 s). Checked on the box: conversation A (41,854 tokens)
+23.0 s, B 24.0 s, A again 2.9 s with 41,849 tokens reused (parked in 1.3 s, restored in 0.66 s). A parked conversation
+takes ~26 KB per token (1.06 GiB at 42K tokens), so the 8 GiB budget holds a ~155K main conversation plus a long
+sub-agent; conversations under 32K tokens are not parked (re-reading them takes 8-10 s). The engine skips parking
+when RAM is short (`--conversation-cache-min-free-mib`, default 2560) and runs as without the cache.
