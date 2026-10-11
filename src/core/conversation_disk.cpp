@@ -7,8 +7,12 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <random>
+#include <set>
 #include <system_error>
 #include <utility>
 #if defined(__linux__)
@@ -65,6 +69,58 @@ void remove_file(const std::string& path) {
     fs::remove(fs::path(path), ec);
 }
 
+bool ends_with(const std::string& s, const char* tail) {
+    const size_t n = std::strlen(tail);
+    return s.size() >= n && s.compare(s.size() - n, n, tail) == 0;
+}
+
+// The index file of a persistent entry: native-endian fields (the session files refuse a big-endian build too),
+// counts before arrays.
+constexpr uint64_t kIndexMagic = 0x3158444943525453ull;   // "STRCIDX1"
+
+struct IndexWriter {
+    std::string b;
+    template<class T> void put(T v) { b.append(reinterpret_cast<const char*>(&v), sizeof v); }
+    void str(const std::string& s) { put<uint32_t>((uint32_t) s.size()); b += s; }
+    void key(const ConversationCheckpoint& c) {
+        put<uint32_t>((uint32_t) c.ids.size());
+        b.append(reinterpret_cast<const char*>(c.ids.data()), c.ids.size() * sizeof(int32_t));
+        put<uint32_t>((uint32_t) c.imgs.size());
+        for (const auto& i : c.imgs) { put<int64_t>(i.start); put<uint64_t>(i.hash); }
+    }
+};
+
+struct IndexReader {
+    const std::string& b;
+    size_t at = 0;
+    bool ok = true;
+    size_t left() const { return b.size() - at; }
+    template<class T> T get() {
+        T v{};
+        if (left() < sizeof v) { ok = false; return v; }
+        std::memcpy(&v, b.data() + at, sizeof v);
+        at += sizeof v;
+        return v;
+    }
+    std::string str() {
+        const uint32_t n = get<uint32_t>();
+        if (!ok || left() < n) { ok = false; return {}; }
+        at += n;
+        return b.substr(at - n, n);
+    }
+    bool key(ConversationCheckpoint& c) {
+        const uint32_t n = get<uint32_t>();
+        if (!ok || left() / sizeof(int32_t) < n) return ok = false;
+        c.ids.resize(n);
+        std::memcpy(c.ids.data(), b.data() + at, n * sizeof(int32_t));
+        at += n * sizeof(int32_t);
+        const uint32_t m = get<uint32_t>();
+        if (!ok || left() / 16 < m) return ok = false;
+        for (uint32_t i = 0; i < m; ++i) c.imgs.push_back({get<int64_t>(), get<uint64_t>()});
+        return ok;
+    }
+};
+
 double mib(uint64_t bytes) { return double(bytes) / (1024.0 * 1024.0); }
 double mbps(uint64_t bytes, double ms) { return ms > 0 ? double(bytes) / 1e6 / (ms / 1000.0) : 0.0; }
 double ms_since(std::chrono::steady_clock::time_point t0) {
@@ -92,6 +148,7 @@ ConversationDiskTier::ConversationDiskTier(ConversationDiskOptions options, std:
 }
 
 ConversationDiskTier::~ConversationDiskTier() {
+    if (open_ && options_.persist) wait_idle();   // what is queued belongs to the next start
     size_t dropped = 0;
     {
         std::lock_guard<std::mutex> lock(m_);
@@ -102,9 +159,121 @@ ConversationDiskTier::~ConversationDiskTier() {
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();
     std::lock_guard<std::mutex> lock(m_);
-    if (open_ && (dropped || !entries_.empty()))
+    if (!open_) return;
+    if (options_.persist) {
+        log(fmt("end: %zu conversations kept on the disk for the next start (%.0f MiB)", entries_.size(), mib(bytes_)));
+        return;
+    }
+    if (dropped || !entries_.empty())
         log(fmt("end: %zu queued dropped, %zu conversations removed from the disk", dropped, entries_.size()));
     while (!entries_.empty()) remove_locked(0, true);
+}
+
+SessionFileIdentity ConversationDiskTier::file_identity() const {
+    return options_.persist ? options_.identity : SessionFileIdentity{nonce_, kTierConfig};
+}
+
+bool ConversationDiskTier::write_index(Entry& e, std::string& error) const {
+    char name[96];
+    std::snprintf(name, sizeof name, "%s%016llx-%llu.idx", file_prefix(), (unsigned long long) nonce_,
+                  (unsigned long long) e.id);
+    const fs::path path = fs::path(options_.dir) / name;
+    const fs::path temp = fs::path(options_.dir) / ("." + std::string(name) + ".tmp");
+    e.written_s = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const SessionFileIdentity id = file_identity();
+    IndexWriter out;
+    out.put(kIndexMagic);
+    out.put(id.model);
+    out.put(id.config);
+    out.put<int64_t>(e.written_s);
+    out.put<uint8_t>(e.cvec ? 1 : 0);
+    out.put<uint64_t>(e.bytes);
+    out.put<uint32_t>((uint32_t) e.files.size());
+    for (const auto& f : e.files) out.str(fs::path(f).filename().string());
+    out.key(e.live);
+    out.put<uint32_t>((uint32_t) e.checkpoints.size());
+    for (const auto& c : e.checkpoints) out.key(c);
+    {
+        std::ofstream f(temp, std::ios::binary | std::ios::trunc);
+        f.write(out.b.data(), (std::streamsize) out.b.size());
+        if (!f) {
+            error = "cannot write the index " + temp.string();
+            remove_file(temp.string());
+            return false;
+        }
+    }
+    std::error_code ec;
+    fs::rename(temp, path, ec);   // a reader sees the whole index or none
+    if (ec) {
+        error = "cannot publish the index: " + ec.message();
+        remove_file(temp.string());
+        return false;
+    }
+    e.index = path.string();
+    return true;
+}
+
+bool ConversationDiskTier::read_index(const std::string& path, Entry& e) const {
+    std::ifstream f(fs::path(path), std::ios::binary);
+    const std::string b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    IndexReader in{b};
+    const SessionFileIdentity id = file_identity();
+    if (in.get<uint64_t>() != kIndexMagic || in.get<uint64_t>() != id.model || in.get<uint64_t>() != id.config)
+        return false;
+    e.written_s = in.get<int64_t>();
+    e.cvec = in.get<uint8_t>() != 0;
+    e.bytes = in.get<uint64_t>();
+    const uint32_t nfiles = in.get<uint32_t>();
+    for (uint32_t i = 0; in.ok && i < nfiles; ++i) e.files.push_back((fs::path(options_.dir) / in.str()).string());
+    if (!in.key(e.live)) return false;
+    const uint32_t nck = in.get<uint32_t>();
+    for (uint32_t i = 0; in.ok && i < nck; ++i) {
+        ConversationCheckpoint c;
+        if (in.key(c)) e.checkpoints.push_back(std::move(c));
+    }
+    if (!in.ok || in.left() != 0 || e.files.empty()) return false;
+    std::error_code ec;
+    for (const auto& file : e.files)
+        if (!fs::is_regular_file(fs::path(file), ec)) return false;
+    e.index = path;
+    return true;
+}
+
+std::string ConversationDiskTier::take_in_earlier_runs(size_t& stale) {
+    std::vector<Entry> found;
+    std::vector<std::string> others;
+    size_t refused = 0;
+    std::error_code ec;
+    for (fs::directory_iterator it(fs::path(options_.dir), ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (!it->is_regular_file(ec) || !tier_file(name)) continue;
+        Entry e;
+        const bool index = name[0] != '.' && ends_with(name, ".idx");
+        const bool taken = index && read_index(it->path().string(), e);
+        if (taken) found.push_back(std::move(e));
+        else others.push_back(it->path().string());
+        refused += index && !taken;
+    }
+    // the files of the entries taken in stay; the rest goes (refused indexes and their files, interrupted writes)
+    std::set<std::string> kept;
+    for (const auto& e : found) kept.insert(e.files.begin(), e.files.end());
+    for (const auto& p : others)
+        if (!kept.count(p)) { remove_file(p); ++stale; }
+    std::sort(found.begin(), found.end(), [](const Entry& a, const Entry& b) { return a.written_s < b.written_s; });
+    for (auto& e : found) {
+        e.id = ++next_id_;
+        e.at = now_();
+        bytes_ += e.bytes;
+        entries_.push_back(std::move(e));
+    }
+    size_t over = 0;
+    while (!entries_.empty() && bytes_ > options_.budget_bytes) {
+        remove_locked(0, true);
+        ++over;
+    }
+    return fmt("persistent (budget only): %zu conversations from earlier runs (%.0f MiB), %zu refused (another model, "
+               "engine version or settings), %zu over the budget removed", entries_.size(), mib(bytes_), refused, over);
 }
 
 void ConversationDiskTier::log(const std::string& line) const {
@@ -127,26 +296,34 @@ bool ConversationDiskTier::open(std::string& error) {
     ec.clear();
 #endif
     size_t stale = 0;
-    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
-        if (it->is_regular_file(ec) && tier_file(it->path().filename().string())) {
-            std::error_code rm;
-            if (fs::remove(it->path(), rm)) ++stale;
+    std::string earlier;
+    if (options_.persist) {
+        earlier = take_in_earlier_runs(stale);
+    } else {
+        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+            if (it->is_regular_file(ec) && tier_file(it->path().filename().string())) {
+                std::error_code rm;
+                if (fs::remove(it->path(), rm)) ++stale;
+            }
+        if (ec) {
+            error = "cannot list the folder " + options_.dir + ": " + ec.message();
+            return false;
         }
-    if (ec) {
-        error = "cannot list the folder " + options_.dir + ": " + ec.message();
-        return false;
+        earlier = fmt("%lld min per conversation", (long long) (options_.ttl_s / 60));
     }
     open_ = true;
     thread_ = std::thread([this] { writer(); });
-    log(fmt("on: %s, budget %.0f MiB, %lld min per conversation; %zu stale files removed", options_.dir.c_str(),
-            mib(options_.budget_bytes), (long long) (options_.ttl_s / 60), stale));
+    log(fmt("on: %s, budget %.0f MiB, %s; %zu stale files removed", options_.dir.c_str(), mib(options_.budget_bytes),
+            earlier.c_str(), stale));
     return true;
 }
 
 void ConversationDiskTier::remove_locked(size_t index, bool delete_files) {
     Entry& e = entries_.at(index);
-    if (delete_files)
+    if (delete_files) {
+        if (!e.index.empty()) remove_file(e.index);   // first: a half-removed entry is not taken in again
         for (const auto& f : e.files) remove_file(f);
+    }
     bytes_ -= e.bytes;
     entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
 }
@@ -254,10 +431,10 @@ void ConversationDiskTier::write(Job& job) {
     // one session file per image: the first stage's, then each later stage's (the writer takes no nested images)
     std::vector<SavedConversation> parts = std::move(job.image.stage_images);
     job.image.stage_images.clear();
-    const SessionFileIdentity id{nonce_, kTierConfig};
+    const SessionFileIdentity id = file_identity();
     SessionWriteOptions wo;
     wo.min_free_bytes = options_.min_free_bytes;
-    wo.durable = false;   // the files live and die with this process: no flush to survive a power loss
+    wo.durable = false;   // a cache: a file a power loss damages fails its hash check and is read again from the prompt
     Entry e = std::move(job.entry);
     e.bytes = 0;
     std::string error;
@@ -277,6 +454,7 @@ void ConversationDiskTier::write(Job& job) {
     };
     bool ok = write_one(job.image, 0);
     for (size_t k = 0; ok && k < parts.size(); ++k) ok = write_one(parts[k], k + 1);
+    if (ok && options_.persist) ok = write_index(e, error);   // after the images: an index names complete files only
     job.image = SavedConversation{};   // the RAM goes back now, written or not
     parts.clear();
     const double ms = ms_since(t0);
@@ -345,9 +523,10 @@ bool ConversationDiskTier::take(uint64_t id, int64_t tokens, SavedConversation& 
         return false;
     }
     const std::vector<std::string> files = entries_[index].files;
+    if (!entries_[index].index.empty()) remove_file(entries_[index].index);   // a later start does not take it in
     remove_locked(index, false);   // the entry goes now; its files are deleted after the read, whatever it gives
     lock.unlock();
-    const SessionFileIdentity fid{nonce_, kTierConfig};
+    const SessionFileIdentity fid = file_identity();
     SessionReadLimits limits;
     limits.admit = admit;
     uint64_t bytes = 0;

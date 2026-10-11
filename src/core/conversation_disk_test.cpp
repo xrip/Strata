@@ -286,6 +286,52 @@ int main() {
         check(cache.best(prompt_of(450, 8000), {}, false).tokens == 400, "b stays in RAM");
     }
 
+    {   // persist: the files outlive the tier, and the next tier with the same identity takes them in
+        auto persistent = [&](uint64_t model) {
+            auto o = opts(dir, GiB, 0);
+            o.persist = true;
+            o.identity = {model, 7};
+            return o;
+        };
+        const std::string prefix = ConversationDiskTier::file_prefix();
+        {
+            ConversationDiskTier tier(persistent(1));
+            check(tier.open(e) && tier.persistent(), "persist: open");
+            check(tier.put(split_image(500, 20)) && tier.put(image(400, 21, 6000)), "persist: two queued");
+        }   // the end waits for the queue and keeps the files
+        check(tier_files(dir) == 5 && logged("2 conversations kept on the disk"), "persist: 3 images + 2 indexes kept");
+        touch(dir / ("." + prefix + "x-1-0.bin.abcd.tmp"));
+        touch(dir / (prefix + "orphan-9-0.bin"));
+        {
+            ConversationDiskTier tier(persistent(1));
+            check(tier.open(e) && tier.size() == 2 && tier_files(dir) == 5, "persist: taken in, leftovers removed");
+            check(logged("2 conversations from earlier runs"), "persist: the start is logged");
+            const auto m = tier.best(prompt_of(600), {}, false);
+            check(m.tokens == 500 && m.live, "persist: matches after a restart");
+            SavedConversation back;
+            const bool read = tier.take(m.id, m.tokens, back, e);
+            if (!read) std::fprintf(stderr, "take: %s\n", e.c_str());
+            check(read, "persist: read back after a restart");
+            check(same(back, trimmed(split_image(500, 20))), "persist: the image is exactly the one written");
+            check(tier_files(dir) == 2, "persist: its images and index are gone");
+        }
+        {
+            ConversationDiskTier other(persistent(2));   // another model, engine version or settings
+            check(other.open(e) && other.size() == 0 && tier_files(dir) == 0 && logged("1 refused"),
+                  "persist: another identity's files are refused and removed");
+        }
+        {
+            ConversationDiskTier tier(persistent(3));
+            check(tier.open(e) && tier.put(image(300, 22)), "persist: put for a damaged index");
+        }
+        for (const auto& f : fs::directory_iterator(dir))
+            if (f.path().extension() == ".idx") fs::resize_file(f.path(), 20);
+        {
+            ConversationDiskTier tier(persistent(3));
+            check(tier.open(e) && tier.size() == 0 && tier_files(dir) == 0, "persist: a damaged index is refused");
+        }
+    }
+
     fs::remove_all(dir);
     std::printf("conversation_disk_test: %d checks passed\n", checks);
     return 0;
