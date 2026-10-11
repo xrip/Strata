@@ -10228,13 +10228,9 @@ int main(int argc, char** argv) {
                 }
                 incoming.reset(); // Running-state/checkpoint copies are no longer needed.
                 const double restore_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-                char from_disk[64] = "";
-                if (disk_read_ms > 0) {
-                    disk_ms = disk_read_ms + restore_ms;
-                    std::snprintf(from_disk, sizeof from_disk, ", from the disk in %.0f ms with the read", disk_ms);
-                }
-                std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms%s; parked=%zu bytes=%zu\n",
-                             (long long) resume, from_live ? "live" : "checkpoint", restore_ms, from_disk,
+                if (disk_read_ms > 0) disk_ms = disk_read_ms + restore_ms;
+                std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms; parked=%zu bytes=%zu\n",
+                             (long long) resume, from_live ? "live" : "checkpoint", restore_ms,
                              conversations.size(), conversations.bytes());
             }
             if (want_cvec != cvec_cached) {
