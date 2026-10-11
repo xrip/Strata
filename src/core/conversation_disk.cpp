@@ -612,6 +612,18 @@ size_t ConversationDiskTier::drop_queued() {
     return dropped.size();   // their RAM goes back here, outside the lock
 }
 
+size_t ConversationDiskTier::clear() {
+    std::unique_lock<std::mutex> lock(m_);
+    const size_t queued = queue_.size();
+    queue_.clear();
+    cv_.wait(lock, [&] { return !writing_; });
+    const size_t n = queued + entries_.size();
+    while (!entries_.empty()) remove_locked(0, true);
+    lock.unlock();
+    if (n) log(fmt("removed all %zu conversations (#879)", n));
+    return n;
+}
+
 std::string ConversationDiskTier::summary() const {
     std::lock_guard<std::mutex> lock(m_);
     const auto& s = stats_;

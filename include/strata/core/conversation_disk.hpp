@@ -114,6 +114,8 @@ public:
     double wait_idle();
     /// Drops the queued images (not the one being written): a request needs their RAM now.  Returns how many.
     size_t drop_queued();
+    /// #879: every conversation goes - queued, being written (waited for) and on the disk, files too.  Returns how many.
+    size_t clear();
 
     /// Removes the entries older than the time limit; returns how many.
     size_t expire();

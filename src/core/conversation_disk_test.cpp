@@ -226,6 +226,16 @@ int main() {
         check(tier.best(prompt_of(450, 5000), {}, false).tokens == 0, "b is gone from the tier");
     }
 
+    {   // #879: clear() takes the conversations on the disk, their files too
+        ConversationDiskTier tier(opts(dir, GiB, 1800));
+        check(tier.open(e) && tier.put(image(400, 40)), "clear: put a");
+        tier.wait_idle();
+        check(tier.size() == 1 && tier_files(dir) == 1, "clear: a on the disk");
+        check(tier.clear() == 1 && tier.size() == 0 && tier_files(dir) == 0 && logged("removed all 1 conversations"),
+              "clear: a and its file gone");
+        check(tier.best(prompt_of(450), {}, false).tokens == 0, "clear: nothing matches");
+    }
+
     {   // a request needs RAM: the queued images go, the one being written stays
         std::promise<void> release;
         std::shared_future<void> gate = release.get_future().share();

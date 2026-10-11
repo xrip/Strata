@@ -189,6 +189,10 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
   No regression. The tail skip was on (all 22 answers differ from `=0`) but gives nothing here (97-99 % of the routed
   experts are in VRAM, and it only saves work on the missed ones), so this box runs `STRATA_ROUTE_TAIL_SKIP=0`, which
   keeps the model's exact output.
+- 0.1.43 (`7695859a`, 72 upstream commits, 2026-10-11): one conflict, upstream's `ConversationCache::clear()` (#879)
+  beside our `set_on_evict` - both kept. #879 drops every parked conversation after non-finite logits; the disk tier
+  holds conversations that were parked, so `ConversationDiskTier::clear()` now drops them too (also in PR #1937). Not
+  yet A/B'd on the box.
 
 ## Settings for this box
 
