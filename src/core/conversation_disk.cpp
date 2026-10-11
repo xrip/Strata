@@ -597,15 +597,30 @@ ConversationDiskStats ConversationDiskTier::stats() const {
     return stats_;
 }
 
+size_t ConversationDiskTier::drop_queued() {
+    std::deque<Job> dropped;
+    uint64_t bytes = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        dropped.swap(queue_);
+        for (const auto& j : dropped) bytes += j.entry.bytes;
+        stats_.dropped += dropped.size();
+    }
+    if (!dropped.empty())
+        log(fmt("dropped %zu queued conversation%s (%.0f MiB): a request needed their RAM", dropped.size(),
+                dropped.size() == 1 ? "" : "s", mib(bytes)));
+    return dropped.size();   // their RAM goes back here, outside the lock
+}
+
 std::string ConversationDiskTier::summary() const {
     std::lock_guard<std::mutex> lock(m_);
     const auto& s = stats_;
     return fmt("totals: %zu queued, %zu written (%.0f MiB, %.0f MB/s), %zu RAM hits, %zu disk hits (%.0f MiB, "
-               "%.0f MB/s), %llu prompt tokens given back, %zu waits for RAM (%.0f ms), %zu expired, %zu removed for "
-               "the budget, %zu/%zu writes/reads failed; on disk %zu (%.0f MiB), queue %zu",
+               "%.0f MB/s), %llu prompt tokens given back, %zu waits for RAM (%.0f ms), %zu dropped for RAM, %zu expired, "
+               "%zu removed for the budget, %zu/%zu writes/reads failed; on disk %zu (%.0f MiB), queue %zu",
                s.queued, s.written, mib(s.bytes_written), mbps(s.bytes_written, s.write_ms), s.ram_hits, s.disk_hits,
                mib(s.bytes_read), mbps(s.bytes_read, s.read_ms), (unsigned long long) s.tokens_back, s.waits,
-               s.wait_ms, s.expired, s.evicted, s.write_failed, s.read_failed, entries_.size(), mib(bytes_),
+               s.wait_ms, s.dropped, s.expired, s.evicted, s.write_failed, s.read_failed, entries_.size(), mib(bytes_),
                queue_.size() + (writing_ ? 1 : 0));
 }
 

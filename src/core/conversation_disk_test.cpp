@@ -1,8 +1,9 @@
 // CPU-only tests for the disk tier of the parked conversations (include/strata/core/conversation_disk.hpp).
 // Built with -DSTRATA_BUILD_CONVERSATION_TESTS=ON; no CUDA, no model.
-#include <algorithm>
 #include "strata/core/conversation_disk.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -11,6 +12,7 @@
 #include <future>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -222,6 +224,25 @@ int main() {
         tier.wait_idle();
         check(!tier.pending() && tier.size() == 1 && tier_files(dir) == 1, "a written after the release");
         check(tier.best(prompt_of(450, 5000), {}, false).tokens == 0, "b is gone from the tier");
+    }
+
+    {   // a request needs RAM: the queued images go, the one being written stays
+        std::promise<void> release;
+        std::shared_future<void> gate = release.get_future().share();
+        std::atomic<bool> started{false};
+        auto o = opts(dir, GiB, 1800);
+        o.before_write = [gate, &started] { started = true; gate.wait(); };
+        ConversationDiskTier tier(std::move(o));
+        check(tier.open(e) && tier.put(image(400, 30)), "drop: put a");
+        while (!started) std::this_thread::yield();
+        check(tier.put(image(400, 31, 5000)) && tier.put(image(400, 32, 7000)), "drop: b and c queued behind a");
+        check(tier.drop_queued() == 2 && tier.pending(), "drop: b and c dropped, a still being written");
+        check(tier.stats().dropped == 2 && logged("dropped 2 queued conversations"), "drop: counted and logged");
+        check(tier.drop_queued() == 0, "drop: nothing more queued");
+        release.set_value();
+        tier.wait_idle();
+        check(tier.size() == 1 && tier.best(prompt_of(450), {}, false).tokens == 400 &&
+              tier.best(prompt_of(450, 5000), {}, false).tokens == 0, "drop: a written, b gone");
     }
 
     {   // the budget: the oldest goes for a new one; an image above the budget is refused

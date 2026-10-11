@@ -39,7 +39,7 @@ struct ConversationDiskOptions {
 /// What the tier did since it started (diagnostics).
 struct ConversationDiskStats {
     size_t queued = 0, written = 0, write_failed = 0, ram_hits = 0, disk_hits = 0, read_failed = 0;
-    size_t expired = 0, evicted = 0, waits = 0;
+    size_t expired = 0, evicted = 0, waits = 0, dropped = 0;   ///< dropped: queued, then their RAM was needed
     uint64_t bytes_written = 0, bytes_read = 0;
     uint64_t tokens_back = 0;                 ///< prompt tokens given back (not read again) by ram or disk hits
     double write_ms = 0, read_ms = 0, wait_ms = 0;
@@ -102,6 +102,8 @@ public:
     bool pending() const;
     /// Blocks until the queue is empty and no write runs; returns the ms it waited.
     double wait_idle();
+    /// Drops the queued images (not the one being written): a request needs their RAM now.  Returns how many.
+    size_t drop_queued();
 
     /// Removes the entries older than the time limit; returns how many.
     size_t expire();
