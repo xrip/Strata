@@ -103,7 +103,7 @@ ConversationDiskTier::~ConversationDiskTier() {
     if (thread_.joinable()) thread_.join();
     std::lock_guard<std::mutex> lock(m_);
     if (open_ && (dropped || !entries_.empty()))
-        log(fmt("end: %zu queued dropped, %zu files' entries removed", dropped, entries_.size()));
+        log(fmt("end: %zu queued dropped, %zu conversations removed from the disk", dropped, entries_.size()));
     while (!entries_.empty()) remove_locked(0, true);
 }
 
