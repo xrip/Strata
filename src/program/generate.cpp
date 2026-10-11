@@ -10062,6 +10062,9 @@ int main(int argc, char** argv) {
                         }
                 }
             auto parked = conversations.best(ids, req_imgs, want_cvec);
+            // what a checkpoint at the right token would reuse: the most tokens this prompt has in common with a held one
+            const int64_t shared = std::max({live_ok ? strata::core::shared_prefix(live, ids) : int64_t(0), conversations.shared_tokens(ids),
+                                             conv_disk.enabled() ? conv_disk.shared_tokens(ids) : int64_t(0)});
             std::optional<strata::core::SavedConversation> incoming;
             // the disk tier holds a longer prefix than the session, a --batch slot or the RAM cache: restore that one
             if (conv_disk.enabled()) {
@@ -10239,6 +10242,10 @@ int main(int argc, char** argv) {
                 cvec_cached = want_cvec;
             }
             if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
+            if (shared - resume >= 4096)
+                std::fprintf(stderr, "strata serve: conversation cache: reused %lld tokens, but %lld of this %zu-token prompt "
+                                     "are the same as a held conversation's: %lld read again (no checkpoint between)\n",
+                             (long long) resume, (long long) shared, ids.size(), (long long) (shared - resume));
             // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
             // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
             checks.erase(std::remove_if(checks.begin(), checks.end(), [&](const ConvCheckpoint& c) {

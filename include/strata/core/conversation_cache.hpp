@@ -189,6 +189,15 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+// how many leading tokens `a` and `b` have in common
+template<class A, class B>
+int64_t shared_prefix(const std::vector<A>& a, const std::vector<B>& b) {
+    const size_t n = std::min(a.size(), b.size());
+    size_t i = 0;
+    while (i < n && a[i] == b[i]) ++i;
+    return (int64_t) i;
+}
+
 class ConversationCache {
 public:
     struct Match {
@@ -235,6 +244,14 @@ public:
     bool can_fit(size_t incoming, size_t held = 0) const {
         return enabled() && held <= budget_ && incoming <= budget_ - held &&
                entries_.size() < slots_ && bytes() <= budget_ - held - incoming;
+    }
+
+    // the most leading tokens `prompt` has in common with a parked conversation, at a checkpoint or not (diagnostics)
+    template<class Token>
+    int64_t shared_tokens(const std::vector<Token>& prompt) const {
+        int64_t n = 0;
+        for (const auto& e : entries_) n = std::max(n, shared_prefix(e.live.ids, prompt));
+        return n;
     }
 
     template<class Token>

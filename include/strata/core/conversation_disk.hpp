@@ -91,6 +91,16 @@ public:
         return best;
     }
 
+    /// As ConversationCache::shared_tokens, over the queued and written entries.
+    template<class Token>
+    int64_t shared_tokens(const std::vector<Token>& prompt) const {
+        std::lock_guard<std::mutex> lock(m_);
+        int64_t n = 0;
+        for (const auto& e : entries_) n = std::max(n, shared_prefix(e.live.ids, prompt));
+        for (const auto& j : queue_) n = std::max(n, shared_prefix(j.entry.live.ids, prompt));
+        return n;
+    }
+
     /// Hands entry `id` back in `out` (its stage images included) and removes it from the tier either way: from RAM
     /// when it is still queued, else from the disk (waiting for its write when it is being written).  `admit(need,
     /// why)` is asked before each file's payload is allocated (session_file_read's RAM preflight).  `tokens` is what
