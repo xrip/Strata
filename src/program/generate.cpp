@@ -7865,6 +7865,12 @@ int main(int argc, char** argv) {
             });
         // Room in RAM for `need` more bytes above `floor`: the disk tier's queued writes first (their RAM comes back),
         // then the RAM cache's oldest conversations.  `mem` keeps the last reading for the caller's message.
+        // freed images stay in malloc's heap, which MemAvailable does not count
+        auto return_freed_heap = [] {
+#if defined(__GLIBC__)
+            malloc_trim(0);
+#endif
+        };
         auto make_ram = [&](uint64_t need, uint64_t floor, size_t& evicted,
                             std::optional<strata::core::HostMemoryReading>& mem) -> bool {
             bool trimmed = false;
@@ -7873,10 +7879,7 @@ int main(int argc, char** argv) {
                 if (strata::core::conversation_memory_admit(mem ? std::optional<uint64_t>(mem->available) : std::nullopt,
                                                             need, floor))
                     return true;
-#if defined(__GLIBC__)
-                // the images freed so far stay in malloc's heap, outside MemAvailable: hand them back, then look again
-                if (!trimmed) { trimmed = true; malloc_trim(0); continue; }
-#endif
+                if (!trimmed) { return_freed_heap(); trimmed = true; continue; }
                 if (conv_disk.pending()) { conv_disk.wait_idle(); trimmed = false; continue; }
                 if (conversations.size() == 0 || evicted >= conversations.slots() || !conversations.evict_oldest())
                     return false;
