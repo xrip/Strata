@@ -150,12 +150,15 @@ config.
 
 ### From the RTX 2080 Ti fork (imanu86/Strata-2080Ti), 2026-10-12
 
-- `STRATA_QSA_ROWS=1` (its `pr/qsa-rows-scores`, cherry-picked): the decode window's QSA block scores with the queries
-  in registers, bitwise (`qsa_rows_bench --rows`: 8 cases, 0 differ on a CMP 50HX). The kernel at 4 tokens 127 -> 79 us
-  at 131K, 193 -> 118 us at 200K. Decode A/B at 172K (the deterministic one, live env): 71.59 / 71.40 -> 72.55 / 72.56
-  tok/s (**+1.5 %**), the prompt read unchanged. On in the box's config.
+- Upstream #2072 (rafatxf, open; cherry-picked): the decode QSA selection at long context on sm_75 - a halving scorer
+  and a split top-k, both on by default on Turing, bitwise (`qsa_topk_parity --selftest` PASS, `qsa_parity` 0 failures,
+  `qsa_select_bench` score hashes equal with `STRATA_SCORES_HALVE` 0/1 at 131K-262K on a CMP 50HX). The scorer at 172K,
+  4 queries 141.1 -> 57.8 us. Decode A/B at 172K (deterministic, live env): 72.38 / 72.38 -> 74.64 / 74.29 tok/s
+  (**+2.9 %** over `STRATA_QSA_ROWS`, ~+4 % over neither). It replaced `STRATA_QSA_ROWS` (the 2080 Ti fork's
+  `pr/qsa-rows-scores`, +1.5 %, cherry-picked and reverted: #2072's scorer is faster and covers it).
 - `STRATA_SELECT_SIMT=1` (upstream opt-in, #1091; on by default in that fork): the 172K prompt read 78.6 / 79.3 s ->
-  78.5 / 78.6 s, nothing here, and not bitwise. Not used.
+  78.5 / 78.6 s, and appends of 4.8-14.5K tokens at 172K depth -0.8 % (noise): nothing here - our own Turing
+  thread scorer (`11a4f15a`) already speeds up that part - and not bitwise. Not used.
 - Not taken: its sm_75 MMVQ table (upstream #1437 is the same idea as our table), EXPDEC (the same idea as mode 8).
 
 ## Dropped in the sync (from the `avx1-sm75-opt` branch)
