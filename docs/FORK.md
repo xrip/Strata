@@ -148,6 +148,16 @@ Two runs of the same arm already differ in 1-2 of 6 answers late in the text (th
 here even with these settings), so the texts cannot judge bit-exactness; the parity tests do. Both are on in the box's
 config.
 
+### From the RTX 2080 Ti fork (imanu86/Strata-2080Ti), 2026-10-12
+
+- `STRATA_QSA_ROWS=1` (its `pr/qsa-rows-scores`, cherry-picked): the decode window's QSA block scores with the queries
+  in registers, bitwise (`qsa_rows_bench --rows`: 8 cases, 0 differ on a CMP 50HX). The kernel at 4 tokens 127 -> 79 us
+  at 131K, 193 -> 118 us at 200K. Decode A/B at 172K (the deterministic one, live env): 71.59 / 71.40 -> 72.55 / 72.56
+  tok/s (**+1.5 %**), the prompt read unchanged. On in the box's config.
+- `STRATA_SELECT_SIMT=1` (upstream opt-in, #1091; on by default in that fork): the 172K prompt read 78.6 / 79.3 s ->
+  78.5 / 78.6 s, nothing here, and not bitwise. Not used.
+- Not taken: its sm_75 MMVQ table (upstream #1437 is the same idea as our table), EXPDEC (the same idea as mode 8).
+
 ## Dropped in the sync (from the `avx1-sm75-opt` branch)
 
 | commit | why |
