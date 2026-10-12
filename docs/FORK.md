@@ -138,6 +138,12 @@ fixed 35.7K-token prompt, 6 questions x 512 greedy tokens, two runs per arm):
 | `STRATA_SM75_TABLE=1` | 77.85 / 77.46 | +7.0 % |
 | both | 80.04 / 80.04 | **+10.3 %** |
 
+A per-type rule on top (mode 8 keeping the CUDA layout for IQ4_NL down on sm_75, branch `sm75-exp-types`): the bench's
+IQ4_NL down at 4 tokens 129 -> 103 us and the whole expert call over 48 layers -17.5 % instead of -14.2 %, bitwise
+equal; in decode nothing (old 80.52 / 80.20 / 80.41, new 80.36 / 80.09 / 80.23 tok/s), so not merged. Its IQ2_XS
+gate/up half did not even move the bench (+17.6 % at 1 token with the same kernel as mode 0: the cost is elsewhere in
+mode 8's call).
+
 Two runs of the same arm already differ in 1-2 of 6 answers late in the text (the engine is not fully repeatable
 here even with these settings), so the texts cannot judge bit-exactness; the parity tests do. Both are on in the box's
 config.
