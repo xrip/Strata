@@ -94,6 +94,9 @@
 #include <cerrno>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#if defined(__GLIBC__)
+#include <malloc.h>   // malloc_trim
+#endif
 #endif
 
 #include <cuda_runtime.h>
@@ -7864,16 +7867,21 @@ int main(int argc, char** argv) {
         // then the RAM cache's oldest conversations.  `mem` keeps the last reading for the caller's message.
         auto make_ram = [&](uint64_t need, uint64_t floor, size_t& evicted,
                             std::optional<strata::core::HostMemoryReading>& mem) -> bool {
+            bool trimmed = false;
             for (;;) {
                 mem = strata::core::sample_host_memory();
                 if (strata::core::conversation_memory_admit(mem ? std::optional<uint64_t>(mem->available) : std::nullopt,
                                                             need, floor))
                     return true;
-                if (conv_disk.drop_queued()) continue;   // a request waits for no write but the one under way
-                if (conv_disk.pending()) { conv_disk.wait_idle(); continue; }
+#if defined(__GLIBC__)
+                // the images freed so far stay in malloc's heap, outside MemAvailable: hand them back, then look again
+                if (!trimmed) { trimmed = true; malloc_trim(0); continue; }
+#endif
+                if (conv_disk.pending()) { conv_disk.wait_idle(); trimmed = false; continue; }
                 if (conversations.size() == 0 || evicted >= conversations.slots() || !conversations.evict_oldest())
                     return false;
                 ++evicted;
+                trimmed = false;
             }
         };
         // Save only on a switch/rewind, not on each continuing request. No graph
