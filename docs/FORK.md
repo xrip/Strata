@@ -118,6 +118,30 @@ tokens in 10.2 s instead of 40.0 s cold, and with the expert placement fixed (`-
 same greedy answer as the cold read, word for word. Without fixing it two cold reads differ too (the placement moves
 with timing): that run-to-run variation is the engine's, not the cache's.
 
+### Turing decode: the interleaved matvec table and expert mode 8 (2026-10-12)
+
+Upstream measures per-architecture tables and kernel modes on the cards it has; Turing had none. On a CMP 50HX:
+`mmvq_il_parity --bench --emit-table` (parity OK for every case, bitwise) gave `kIlRows_75` / `kIl1Rows_75` (IQ4_XS
+2560x10240 at 4 columns 94.6 -> 35.6 us, the Q5_K head at 3 columns 1781 -> 1097 us), opt-in `STRATA_SM75_TABLE=1`.
+`native_expert_bench` over all 48 layers, mode 0 against `STRATA_EXP_MODE=8` (Volta's and the P100's layout, already
+in the code): bitwise equal everywhere; gate/up IQ3_S / IQ2_S / IQ2_XXS / IQ3_XXS -27..-42 % at 4 tokens, down Q2_0
+-9..-12 %, but IQ2_XS gate/up +19 % at 1 token and IQ4_NL down +31 % at 4 tokens (a per-type rule would keep those on
+mode 0: about -26 % instead of -22 % of the expert time at 4 tokens).
+
+Decode A/B (one binary, the arms differ only by env; `--adapt-swaps 0 --pcie-frac 0.17`, CPU prompt share off; a
+fixed 35.7K-token prompt, 6 questions x 512 greedy tokens, two runs per arm):
+
+| arm | decode | |
+|---|---:|---:|
+| base | 72.62 / 72.57 tok/s | |
+| `STRATA_EXP_MODE=8` | 74.74 / 74.67 | +2.9 % |
+| `STRATA_SM75_TABLE=1` | 77.85 / 77.46 | +7.0 % |
+| both | 80.04 / 80.04 | **+10.3 %** |
+
+Two runs of the same arm already differ in 1-2 of 6 answers late in the text (the engine is not fully repeatable
+here even with these settings), so the texts cannot judge bit-exactness; the parity tests do. Both are on in the box's
+config.
+
 ## Dropped in the sync (from the `avx1-sm75-opt` branch)
 
 | commit | why |
