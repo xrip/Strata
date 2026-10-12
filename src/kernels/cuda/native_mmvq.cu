@@ -2585,8 +2585,7 @@ constexpr IlRows kIlRows_86[] = {
     {11, {{1, 2, 2, 2, 2}, {1, 1, 1, 2, 2}, {1, 1, 1, 1, 1}}},   // Q3_K (two runs; 2560x10240 at 4 columns 120 -> 70 us)
 };
 // Turing (sm_75): read off mmvq_il_parity --bench --emit-table on a CMP 50HX (TU102, unlocked to RTX 2080 Ti clocks), the
-// same 3% rule; opt-in with STRATA_SM75_TABLE=1.  IQ4_XS 2560x10240 at 4 columns 94.6 -> 35.6 us, the Q5_K head at 3
-// columns 1781 -> 1097 us.
+// same 3% rule.  IQ4_XS 2560x10240 at 4 columns 94.6 -> 35.6 us, the Q5_K head at 3 columns 1781 -> 1097 us.
 constexpr IlRows kIlRows_75[] = {
     {23, {{0, 4, 2, 2, 2}, {4, 4, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // IQ4_XS
     {12, {{0, 4, 4, 4, 4}, {1, 2, 2, 2, 2}, {1, 2, 2, 2, 2}}},   // Q4_K
@@ -2621,7 +2620,7 @@ struct IlArch { int cc; const IlRows* t; size_t n; };
 constexpr IlArch kIlArch[] = {
     {60, kIlRows_60, sizeof(kIlRows_60) / sizeof(IlRows)},   // Pascal GP100: measured on a Tesla P100
     {70, kIlRows_70, sizeof(kIlRows_70) / sizeof(IlRows)},   // Volta: PR 1401, measured on a V100-SXM2
-    {75, kIlRows_75, sizeof(kIlRows_75) / sizeof(IlRows)},   // Turing: a CMP 50HX (opt-in, STRATA_SM75_TABLE=1)
+    {75, kIlRows_75, sizeof(kIlRows_75) / sizeof(IlRows)},   // Turing: measured on a CMP 50HX
     {86, kIlRows_86, sizeof(kIlRows_86) / sizeof(IlRows)},   // 143-dense: RTX A4000 with the real shapes (Q3_K added)
 };
 // STRATA_MMVQ_IL_ROWS="type:ncols:r0,r1,r2,r3,r4;..." overrides single rows of the table for every card (type = ggml
@@ -2703,7 +2702,7 @@ namespace {
 // native_mmvq's kernels unchanged
 // Volta (PR 1401): opt-in with STRATA_SM70_TABLE=1 until the author confirms on a V100 with the final code
 bool sm70_opt_in() { const char* v = std::getenv("STRATA_SM70_TABLE"); return v != nullptr && std::atoi(v) != 0; }
-// Turing (sm_75): opt-in with STRATA_SM75_TABLE=1 while its table is measured (CMP 50HX)
+// Turing (sm_75): opt-in with STRATA_SM75_TABLE=1 until a second Turing card confirms the table
 bool sm75_opt_in() { const char* v = std::getenv("STRATA_SM75_TABLE"); return v != nullptr && std::atoi(v) != 0; }
 // Pascal (sm_60, GP100): the same interleaved kernels (bitwise equal to native_mmvq's, mmvq_il_parity), its own table
 // kIlRows_60.  STRATA_SM60_TABLE=0 keeps native_mmvq's kernels on a P100; any other value (or unset) uses the table.
