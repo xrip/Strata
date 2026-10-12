@@ -241,6 +241,11 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
   beside our `set_on_evict` - both kept. #879 drops every parked conversation after non-finite logits; the disk tier
   holds conversations that were parked, so `ConversationDiskTier::clear()` now drops them too (also in PR #1937). Not
   yet A/B'd on the box.
+- 0.1.43.1 (`a0116b27`, 33 upstream commits, 2026-10-12, merged with GitHub's sync): no conflicts. For this box: parking
+  no longer trips the watchdog (#2049: a 352K-token park took 15.5 s here), tool calls in a Markdown fence and a quoted
+  `</tool_call>` (#2037 #2026), pinned bounce slots for the prompt path's pageable copies (#1996). The version change makes
+  the disk tier refuse the saved conversations once. Builds; conv_cache_test, conversation_disk_test 77,
+  conversation_cache_test 4219, serve 309 pass.
 
 ## Settings for this box
 
