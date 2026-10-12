@@ -3430,12 +3430,11 @@ int exp_mode() {
     return per_dev[dev] - 1;
 #endif
 }
-// Turing (sm_75): two types are slower in mode 8 than in the CUDA layout (native_expert_bench, all 48 layers of the
-// IQ3_XXS pack on a CMP 50HX): IQ2_XS gate/up +19 % at 1 token, IQ4_NL down +31 % at 4.  Under mode 8 they keep the CUDA
-// layout; both layouts give the same bits.
-bool exp8_keeps_cuda(int type, bool down) {
+// Turing (sm_75): mode 8's IQ4_NL down is slower than the CUDA layout (native_expert_bench, the IQ3_XXS pack's 18
+// IQ4_NL layers on a CMP 50HX: 99 -> 129 us at 4 tokens), so under mode 8 it keeps the CUDA layout there; same bits.
+bool exp8_down_keeps_cuda(int d_type) {
 #if defined(STRATA_HIP_GFX906)
-    (void) type; (void) down;
+    (void) d_type;
     return false;
 #else
     static int turing[64];   // 0 unknown, 1 yes, 2 no
@@ -3447,7 +3446,7 @@ bool exp8_keeps_cuda(int type, bool down) {
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
         turing[dev] = major == 7 && minor == 5 ? 1 : 2;
     }
-    return turing[dev] == 1 && type == (down ? 20 : 17);
+    return turing[dev] == 1 && d_type == 20;
 #endif
 }
 #endif
@@ -3521,7 +3520,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     // call, grid_groups 1..cap) keeps the CUDA layout: V100, 0 groups 11.3 vs 6.5 us, 1 group of 2 29.6 vs 21.3
     const int em_call = (grid_groups > 0 && grid_groups < cap_groups) ? 0 : exp_mode();
 #endif
-    int em0 = em_call == 8 && exp8_keeps_cuda(L.gu_type, false) ? 0 : em_call;   // gate/up's mode
+    int em0 = em_call;
 #endif
 #if STRATA_EXP_LAYOUTS
     const bool fused_gu = em0 == 8 && ((kExpLds16 && L.gu_type == 16) || L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23) &&
@@ -3602,7 +3601,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     }
     if (g_exp_phase == 1) return;
 #if STRATA_EXP_LAYOUTS
-    em0 = em_call == 8 && exp8_keeps_cuda(L.d_type, true) ? 0 : em_call;   // down's mode
+    if (em_call == 8 && exp8_down_keeps_cuda(L.d_type)) em0 = 0;
 #endif
     const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
     const dim3 gd((unsigned) ((L.n_embd + d_rows - 1) / d_rows), (unsigned) gy);
