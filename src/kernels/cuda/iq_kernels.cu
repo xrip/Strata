@@ -3430,6 +3430,26 @@ int exp_mode() {
     return per_dev[dev] - 1;
 #endif
 }
+// Turing (sm_75): two types are slower in mode 8 than in the CUDA layout (native_expert_bench, all 48 layers of the
+// IQ3_XXS pack on a CMP 50HX): IQ2_XS gate/up +19 % at 1 token, IQ4_NL down +31 % at 4.  Under mode 8 they keep the CUDA
+// layout; both layouts give the same bits.
+bool exp8_keeps_cuda(int type, bool down) {
+#if defined(STRATA_HIP_GFX906)
+    (void) type; (void) down;
+    return false;
+#else
+    static int turing[64];   // 0 unknown, 1 yes, 2 no
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (!turing[dev]) {
+        int major = 0, minor = 0;
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+        turing[dev] = major == 7 && minor == 5 ? 1 : 2;
+    }
+    return turing[dev] == 1 && type == (down ? 20 : 17);
+#endif
+}
 #endif
 int g_exp_phase = 0;   // the bench: 0 all, 1 gate/up + swiglu + quantize only, 2 down only
 
@@ -3495,12 +3515,13 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const dim3 ggu((unsigned) ((2 * L.n_ff + gu_rows - 1) / gu_rows), (unsigned) gy);
 #if STRATA_EXP_LAYOUTS
 #if defined(STRATA_HIP_GFX906)
-    const int em0 = exp_mode();
+    const int em_call = exp_mode();
 #else
     // CUDA: the AMD layouts launch a block row per possible group, so a call that strides (a verify window's PCIe
     // call, grid_groups 1..cap) keeps the CUDA layout: V100, 0 groups 11.3 vs 6.5 us, 1 group of 2 29.6 vs 21.3
-    const int em0 = (grid_groups > 0 && grid_groups < cap_groups) ? 0 : exp_mode();
+    const int em_call = (grid_groups > 0 && grid_groups < cap_groups) ? 0 : exp_mode();
 #endif
+    int em0 = em_call == 8 && exp8_keeps_cuda(L.gu_type, false) ? 0 : em_call;   // gate/up's mode
 #endif
 #if STRATA_EXP_LAYOUTS
     const bool fused_gu = em0 == 8 && ((kExpLds16 && L.gu_type == 16) || L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23) &&
@@ -3580,6 +3601,9 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     check("native_expert_grouped/swiglu");
     }
     if (g_exp_phase == 1) return;
+#if STRATA_EXP_LAYOUTS
+    em0 = em_call == 8 && exp8_keeps_cuda(L.d_type, true) ? 0 : em_call;   // down's mode
+#endif
     const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
     const dim3 gd((unsigned) ((L.n_embd + d_rows - 1) / d_rows), (unsigned) gy);
 #if STRATA_EXP_LAYOUTS
