@@ -156,6 +156,11 @@ config.
   4 queries 141.1 -> 57.8 us. Decode A/B at 172K (deterministic, live env): 72.38 / 72.38 -> 74.64 / 74.29 tok/s
   (**+2.9 %** over `STRATA_QSA_ROWS`, ~+4 % over neither). It replaced `STRATA_QSA_ROWS` (the 2080 Ti fork's
   `pr/qsa-rows-scores`, +1.5 %, cherry-picked and reverted: #2072's scorer is faster and covers it).
+- Upstream #2091 + #2093 (rafatxf, open; cherry-picked), on by default with `STRATA_BF16_TC=1` on sm_75: the
+  hyper-connection's xn16 written as FP16 for its tensor-core GEMMs (`STRATA_XN_F16`) and the prompt path's top-k with one
+  read of the scores (`STRATA_TOPK_SAMPLE`). Bitwise: `qsa_topk_parity --selftest` PASS; the first logits after a 172K
+  prompt byte-identical on vs off (and between two "off" runs, CPU share 0 - the control). Prompt read, the live env:
+  172K cold 80.06 / 79.92 -> 78.02 / 77.90 s, appends of 4.8 / 9.3 / 14.5K at 172K depth -3.1 / -3.0 / -3.1 % (**~3 %**).
 - `STRATA_SELECT_SIMT=1` (upstream opt-in, #1091; on by default in that fork): the 172K prompt read 78.6 / 79.3 s ->
   78.5 / 78.6 s, and appends of 4.8-14.5K tokens at 172K depth -0.8 % (noise): nothing here - our own Turing
   thread scorer (`11a4f15a`) already speeds up that part - and not bitwise. Not used.
