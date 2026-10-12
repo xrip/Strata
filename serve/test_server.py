@@ -3719,6 +3719,20 @@ class ThinkingBudget(unittest.TestCase):
         self.assertIn("answering: 10 of max 6400 tokens", lines[1])
         self.assertIn("thinking: 10 of max 6400 tokens", lines[2])
 
+    def test_the_prompt_line_says_the_time_left(self):
+        """The rest of the prompt at the rate read so far, the reused prefix not counted (as llama.cpp's progress)."""
+        st = {"phase": "reading the prompt", "generated": 0, "first_token": None, "started": time.time() - 3}
+        self.engine.progress, self.engine.reused, self.engine.progress_ms = (60_000, 100_000), 20_000, 20_000
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.svc._progress(0, st=st)                       # 40,000 read in 20 s: 40,000 left is ~20 s
+            self.engine.progress_ms = 0
+            self.svc._progress(0, st=st)                       # no rate yet: no estimate
+        lines = out.getvalue().splitlines()
+        self.assertIn("reading the prompt: 60,000 of 100,000 tokens", lines[0])
+        self.assertTrue(lines[0].endswith(", ~20 s left"), lines[0])
+        self.assertNotIn("left", lines[1])
+
     def test_a_budget_above_max_tokens_is_capped_to_leave_room_for_the_answer(self):
         """#984: max_tokens 300 and a budget of 5000 never fired: the reply ended while still thinking.  The thinking
         is closed at max_tokens less the answer's reserve (max 512 or a quarter, at most half), with one log line."""

@@ -3781,6 +3781,17 @@ class Service:
                     s["phase"] = "tool call complete"
                 s["tail"] = ((s.get("tail") or "") + (ev.text or ""))[-600:]
 
+    def _read_left(self, pr) -> str:
+        """", ~N s left" for the prompt line: the rest of the prompt at the rate read so far since the reused prefix
+        (llama.cpp's prompt_progress rule), or "" before there is a rate or under --batch (one global progress)."""
+        if not pr or not pr[1] or getattr(self.engine, "batch", 0):
+            return ""
+        read_ms = getattr(self.engine, "progress_ms", 0) or 0
+        fresh = pr[0] - (getattr(self.engine, "reused", 0) or 0)
+        if read_ms <= 0 or fresh <= 0:
+            return ""
+        return f", ~{(pr[1] - pr[0]) * read_ms / fresh / 1000:.0f} s left"
+
     def _progress(self, last_print, every=1.0, st=None):
         """A progress line in the server window every `every` seconds while a request runs."""
         now = time.time()
@@ -3792,7 +3803,7 @@ class Service:
         if s.get("first_token") is None:
             pr = getattr(self.engine, "progress", None)   # (position reached, prompt tokens): a reused prefix counts
             done = f"{pr[0]:,} of {pr[1]:,}" if pr and pr[1] else f"{s.get('prompt_tokens', 0):,}"   # as read (#29)
-            print(f"[strata] reading the prompt: {done} tokens, {el:.0f} s so far", flush=True)
+            print(f"[strata] reading the prompt: {done} tokens, {el:.0f} s so far{self._read_left(pr)}", flush=True)
         else:
             rate = s["generated"] / max(1e-6, now - s["first_token"])
             # #984: while a thinking budget applies, the thinking line shows it, not the request's max_tokens
