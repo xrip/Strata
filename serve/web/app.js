@@ -10,6 +10,7 @@ const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toLo
 const kfmt = (n) => (n == null ? "–" : n >= 1000 ? `${fmt(n / 1000, n >= 10000 ? 0 : 1)}k` : fmt(n));
 // a context size: 32768 -> "32K" (powers of two), else like kfmt
 const ctxfmt = (n) => (n && n % 1024 === 0 ? `${fmt(n / 1024)}K` : kfmt(n));
+const secs = (s) => (s < 90 ? `${fmt(s)} s` : `${fmt(s / 60)} min`);
 const gb = (b, d = 1) => (b == null ? "–" : fmt(b / 1073741824, d));   // memory: binary GB, as Windows shows it
 
 const store = {
@@ -216,12 +217,13 @@ function renderConvCache(c) {
   }
   $("cc-sum").textContent = c.requests ? `${fmt(c.requests_reused)} of ${fmt(c.requests)} requests reused part of their prompt` : "";
   const share = c.prompt_tokens ? ` (${fmt((100 * c.reused_tokens) / c.prompt_tokens)}% of all prompt tokens)` : "";
-  const event = c.last_event ? `${c.last_event === "parked" ? "Parked" : "Restored"} ${fmt(c.last_tokens)} tokens, ${since(c.last_at)}` : null;
+  const event = c.last_event ? `${c.last_event[0].toUpperCase() + c.last_event.slice(1)} ${fmt(c.last_tokens)} tokens, ${since(c.last_at)}` : null;
   facts($("cc-facts"), [
     ["Last request", c.last_prompt != null ? `${fmt(c.last_reused || 0)} of ${fmt(c.last_prompt)} prompt tokens reused` : null],
     ["Reused since start", c.requests ? `${fmt(c.reused_tokens)} tokens${share}` : null],
     ["Parked / restored", c.enabled ? `${fmt(c.parks)} / ${fmt(c.restores)}${c.evictions ? ` · ${fmt(c.evictions)} evicted` : ""}` : null],
     ["Last switch", c.enabled ? event : null],
+    ["On disk", c.on_disk != null ? `${fmt(c.on_disk)} conversations · ${gb(c.disk_mib * 1048576)} GB · ${fmt(c.disk_hits)} restored from it` : null],
   ]);
   $("cc-note").textContent = c.enabled
     ? "A request that continues a parked conversation gets its state back instead of reading it again; the conversation being answered is not counted as parked. The oldest goes when the slots or the memory are full."
@@ -248,7 +250,9 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     prog.dataset.tone = "info";
     if (live.prompt_total) {
       pct = (100 * live.prompt_read) / live.prompt_total;
-      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`;
+      const reused = live.prompt_reused ? ` (${fmt(live.prompt_reused)} reused)` : "";
+      const left = live.prompt_left_s != null ? ` · ~${secs(live.prompt_left_s)} left` : "";
+      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens${reused} · ${fmt(pct)}%${left}`;
     } else {
       detail = `${fmt(live.prompt_tokens)} tokens`;
     }

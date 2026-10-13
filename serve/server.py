@@ -531,8 +531,9 @@ class ConvCacheLog:
     """#596: the engine's conversation cache as its log tells it (the engine writes "strata serve: conversation
     cache: parked N tokens ...; parked=P bytes=B evictions=E" and "restored N tokens ...; parked=P bytes=B" to stderr,
     which is the log): read on from where it was last read, from the start of the engine's current run."""
-    EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
-                       r"(?: evictions=(\d+))?")
+    EVENT = re.compile(r"conversation cache: (parked|skipped|restored|sent to the disk) (\d+) tokens.*?parked=(\d+) "
+                       r"bytes=(\d+)(?: evictions=(\d+))?")
+    ON_DISK = re.compile(r"conversation disk: .*?on disk (\d+), (\d+) MiB")   # the disk tier (--conversation-disk-dir)
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
@@ -542,7 +543,7 @@ class ConvCacheLog:
 
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
-                      "last_tokens": None, "last_at": None}
+                      "last_tokens": None, "last_at": None, "on_disk": None, "disk_mib": None, "disk_hits": 0}
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
@@ -566,6 +567,12 @@ class ConvCacheLog:
         self.pos += end
         now = time.time()
         for line in data[:end].decode("utf-8", "replace").splitlines():
+            if "conversation disk:" in line:
+                m = self.ON_DISK.search(line)
+                if m:
+                    self.state["on_disk"], self.state["disk_mib"] = int(m.group(1)), int(m.group(2))
+                self.state["disk_hits"] += "disk hit:" in line
+                continue
             if "conversation cache:" not in line:
                 continue
             m = self.EVENT.search(line)
@@ -575,7 +582,7 @@ class ConvCacheLog:
                 if m.group(5) is not None:
                     st["evictions"] = int(m.group(5))
                 if m.group(1) != "skipped":
-                    st["parks" if m.group(1) == "parked" else "restores"] += 1
+                    st["restores" if m.group(1) == "restored" else "parks"] += 1
                     st["last_event"], st["last_tokens"], st["last_at"] = m.group(1), int(m.group(2)), now
                 continue
             m = self.DROPPED.search(line)
@@ -3423,6 +3430,9 @@ class Service:
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
+            live["prompt_reused"] = getattr(self.engine, "reused", None)
+            left = self._read_left_s(progress)
+            live["prompt_left_s"] = None if left is None else round(left)
         par = int(getattr(self.engine, "batch", 0) or 0)
         if par:                                         # #465: the requests running together, slot by slot
             with self.status_lock:
@@ -3781,16 +3791,21 @@ class Service:
                     s["phase"] = "tool call complete"
                 s["tail"] = ((s.get("tail") or "") + (ev.text or ""))[-600:]
 
-    def _read_left(self, pr) -> str:
-        """", ~N s left" for the prompt line: the rest of the prompt at the rate read so far since the reused prefix
-        (llama.cpp's prompt_progress rule), or "" before there is a rate or under --batch (one global progress)."""
-        if not pr or not pr[1] or getattr(self.engine, "batch", 0):
-            return ""
+    def _read_left_s(self, pr) -> float | None:
+        """The seconds the rest of the prompt takes at the rate read so far since the reused prefix (llama.cpp's
+        prompt_progress rule), or None before there is a rate or under --batch (one global progress)."""
+        if not pr or not pr[1] or pr[0] >= pr[1] or getattr(self.engine, "batch", 0):
+            return None
         read_ms = getattr(self.engine, "progress_ms", 0) or 0
         fresh = pr[0] - (getattr(self.engine, "reused", 0) or 0)
         if read_ms <= 0 or fresh <= 0:
-            return ""
-        return f", ~{(pr[1] - pr[0]) * read_ms / fresh / 1000:.0f} s left"
+            return None
+        return (pr[1] - pr[0]) * read_ms / fresh / 1000
+
+    def _read_left(self, pr) -> str:
+        """", ~N s left" for the prompt line, or "" without an estimate."""
+        left = self._read_left_s(pr)
+        return "" if left is None else f", ~{left:.0f} s left"
 
     def _progress(self, last_print, every=1.0, st=None):
         """A progress line in the server window every `every` seconds while a request runs."""

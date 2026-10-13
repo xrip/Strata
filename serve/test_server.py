@@ -3733,6 +3733,15 @@ class ThinkingBudget(unittest.TestCase):
         self.assertTrue(lines[0].endswith(", ~20 s left"), lines[0])
         self.assertNotIn("left", lines[1])
 
+    def test_the_monitor_says_the_time_left(self):
+        """/metrics' live block: the same estimate and the reused prefix; none once the whole prompt is held."""
+        self.svc.status.update(busy=True, first_token=None, started=time.time())
+        self.engine.progress, self.engine.reused, self.engine.progress_ms = (60_000, 100_000), 20_000, 20_000
+        live = self.svc.metrics()["live"]
+        self.assertEqual((live["state"], live["prompt_reused"], live["prompt_left_s"]), ("reading", 20_000, 20))
+        self.engine.progress = (100_000, 100_000)                  # all of it from the cache: nothing left to read
+        self.assertIsNone(self.svc.metrics()["live"]["prompt_left_s"])
+
     def test_a_budget_above_max_tokens_is_capped_to_leave_room_for_the_answer(self):
         """#984: max_tokens 300 and a budget of 5000 never fired: the reply ended while still thinking.  The thinking
         is closed at max_tokens less the answer's reserve (max 512 or a quarter, at most half), with one log line."""
