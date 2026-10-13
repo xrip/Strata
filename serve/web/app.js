@@ -226,7 +226,7 @@ function renderConvCache(c) {
     ["On disk", c.on_disk != null ? `${fmt(c.on_disk)} conversations · ${gb(c.disk_mib * 1048576)} GB · ${fmt(c.disk_hits)} restored from it` : null],
   ]);
   $("cc-note").textContent = c.enabled
-    ? "A request that continues a parked conversation gets its state back instead of reading it again; the conversation being answered is not counted as parked. The oldest goes when the slots or the memory are full."
+    ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
 }
 
