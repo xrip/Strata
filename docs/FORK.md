@@ -246,6 +246,14 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
   `</tool_call>` (#2037 #2026), pinned bounce slots for the prompt path's pageable copies (#1996). The version change makes
   the disk tier refuse the saved conversations once. Builds; conv_cache_test, conversation_disk_test 77,
   conversation_cache_test 4219, serve 309 pass.
+- 0.1.44 (`ed4773eb`, 271 upstream commits, 2026-10-13): Mac Metal, NVFP4 W4A4, Qwen3.6, sm_61 tables, the #2228 picture
+  hash in the conversation cache. Upstream rewrote the prompt path's expert group gather for NVFP4, so our in-place
+  gate/up MMQ (`94292d66`, 0.7 % of a 140K turn, a patched copy of llama.cpp's `mmq.cuh`) was reverted before the
+  merge. Conflicts kept both sides: the sm_75 and sm_61 one-column tables, the disk-persist QUIT timeout, our read-again
+  diagnostic after #2228's. The new multi-GPU defaults (drafter on the first card, pipelined decode from two stages,
+  16K prompt chunks) are HIP/gfx12 only: CUDA is unchanged. The version change makes the disk tier refuse the saved
+  conversations once. Compile check of the conflicted files, conversation_disk_test 77, serve 764 pass. Not yet built or
+  A/B'd on the box.
 
 ## Settings for this box
 
