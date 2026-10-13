@@ -4686,14 +4686,16 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             stop = "stop_sequence" if x.get("stop_sequence") is not None else \
                 "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
-            # the final counts, Anthropic's way: input_tokens leaves out what the conversation cache already held,
-            # which is cache_read_input_tokens (message_start could only say the whole prompt).  At least the last
-            # prompt token is always read, and Claude Code takes an input_tokens of 0 as "not given" and keeps
-            # message_start's whole prompt beside cache_read_input_tokens: the prompt counted twice (#1013)
+            # the final counts, Anthropic's way (message_start could only say the whole prompt): what the cache
+            # already held is cache_read_input_tokens; what was read now stays in the session for the next request,
+            # so it was written to the cache - cache_creation_input_tokens - all but the last prompt token, which is
+            # input_tokens.  Never 0: Claude Code takes an input_tokens of 0 as "not given" and keeps message_start's
+            # whole prompt beside the cache counts: the prompt counted twice (#1013)
             reused = max(0, min(x.get("reused") or 0, len(ids) - 1))
             yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop,
                                                                        "stop_sequence": x.get("stop_sequence")},
-                                    "usage": {"input_tokens": len(ids) - reused, "cache_read_input_tokens": reused,
+                                    "usage": {"input_tokens": 1, "cache_creation_input_tokens": len(ids) - reused - 1,
+                                              "cache_read_input_tokens": reused,
                                               "output_tokens": x["completion_tokens"]}}
             yield "message_stop", {"type": "message_stop"}
 
