@@ -45,8 +45,8 @@ or the RAM cache:
 - each image of a layer split (the first stage's and every later stage's) is one session file, written and read
   with the session files' code (`conversation_file.hpp`: atomic write, size and hash checks, the free-space preflight
   `--session-min-free-mib`); their identity is a random number of this run, so only this process reads them back;
-- `--conversation-disk-ttl-min N` (default 30): a conversation stays on the disk N minutes after it was written
-  (removed at the next request or write after that); `--conversation-disk-mib N` (default 32768): oldest first out;
+- `--conversation-disk-mib N` (default 32768): the oldest conversation goes first when a write needs room (the
+  time limit `--conversation-disk-ttl-min` was removed on 2026-10-14: the budget does the same job);
 - read back = removed from the disk (the session holds it again, and it is parked again on the next switch);
 - RAM for a read: the RAM preflight with the parking floor (`--conversation-cache-min-free-mib`); when RAM is short
   the RAM cache's oldest conversations go to the disk first, as when parking;
@@ -69,15 +69,14 @@ Diagnostics, all on stderr as `strata serve: conversation disk: ...` (with the u
 for parking and the GPU restore):
 
 ```
-on: DIR, budget 32768 MiB, 30 min per conversation; N stale files removed
+on: DIR, budget 32768 MiB, removed at the end; N stale files removed
 queued 155000 tokens (4012 MiB in RAM until written; queue 1, 4012 MiB)
-wrote 155000 tokens: 3480 MiB in 2 files, 1900 ms (1920 MB/s); on disk 1, 3480 MiB; 0 removed for the budget, 0 expired
+wrote 155000 tokens: 3480 MiB in 2 files, 1900 ms (1920 MB/s); on disk 1, 3480 MiB; 0 removed for the budget
 RAM hit: 26000 tokens back from the write queue (700 MiB, no disk) in 0.1 ms
 disk hit: 155000 tokens, 3480 MiB in 2 files, 1700 ms (2146 MB/s)[, after N ms waiting for its write]
 waited 850 ms for 1 queued write (their RAM was needed)
-removed 1 conversation older than 30 min
 totals: queued, written (MiB, MB/s), RAM hits, disk hits (MiB, MB/s), prompt tokens given back, waits for RAM (ms),
-        expired, removed for the budget, failed writes/reads; on disk (MiB), queue
+        removed for the budget, failed writes/reads; on disk (MiB), queue
 ```
 
 (the numbers above show the format, they are not measurements). The impact of a hit: the tokens given back against
