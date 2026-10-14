@@ -95,13 +95,19 @@ disk 6.4 s (read 3.6 s: 2,639 MiB at 761 MB/s; GPU restore 0.87 s; in RAM it was
 at 80-370 MB/s while the next prompt was read; a request waited for a write once (0.9 s). No file was left after the
 engine ended. Sent upstream as PR #1937.
 
-`--conversation-disk-persist` (also in PR #1937): the conversations outlive the engine. The files are bound to the
+`--conversation-disk-persist on` (PR #1937: `--conversation-disk-persist` without a value): the conversations outlive
+the engine. The files are bound to the
 session files' identity (model, engine version, settings); an index per conversation lets the next start take them in;
 no time limit (the budget alone); on QUIT the current and every parked conversation go to the disk first (the server
 waits up to 300 s; the engine ignores a terminal's SIGINT so the save is not cut short). On the box (2026-10-11): the
 save at the stop 6.8 s (a 165K-token current conversation and two parked 42K ones), the next start took in 3
 conversations (4,311 MiB), and all three came back from the disk with the same answers - the 165K one in 6.7 s instead
 of 77.6 s.
+
+`--conversation-disk-persist exit-only`: the same files for the next start, but nothing is written while the engine runs (an
+eviction drops the conversation; QUIT writes the current and the parked ones). On the box on 2026-10-14 the evictions'
+writes were never read back within a run: 40 writes (197 GiB) and 34 waits for a write (4.5 min) in five runs, and the
+only two disk hits were the first requests after a start, from the QUIT save.
 
 ### Checkpoints spread back from the end (`--prompt-cache-spread`, opt-in)
 
@@ -286,7 +292,7 @@ and in `"args"` the conversation cache, so an agent's main conversation and its 
 
 ```json
 "--conversation-cache-mib", "8192", "--conversation-cache-slots", "3", "--conversation-cache-min-tokens", "32768",
-"--conversation-disk-dir", "/home/xrip/strata/conversation-cache", "--conversation-disk-persist", "--prompt-cache-spread"
+"--conversation-disk-dir", "/home/xrip/strata/conversation-cache", "--conversation-disk-persist", "exit-only", "--prompt-cache-spread"
 ```
 
 Without it the engine keeps one conversation: in an agent session every switch between the main conversation
