@@ -252,8 +252,22 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
   merge. Conflicts kept both sides: the sm_75 and sm_61 one-column tables, the disk-persist QUIT timeout, our read-again
   diagnostic after #2228's. The new multi-GPU defaults (drafter on the first card, pipelined decode from two stages,
   16K prompt chunks) are HIP/gfx12 only: CUDA is unchanged. The version change makes the disk tier refuse the saved
-  conversations once. Compile check of the conflicted files, conversation_disk_test 77, serve 764 pass. Not yet built or
-  A/B'd on the box.
+  conversations once. Compile check of the conflicted files, conversation_disk_test 77, serve 764 pass.
+- 0.1.44.1 (`296b59d2`, 11 more, 2026-10-14, GitHub's sync `ddcf3260`): `0b6fc1ce` is needed here - 0.1.44's NVFP4 CPU
+  files had AVX2/AVX-512 static initialisers, an illegal instruction before `main` on these AVX1 Xeons (#2324). Box A/B
+  against the deployed `4b850db8` (0.1.43.1 + ours), gate config, two runs each:
+
+  | | A `4b850db8` | B `ddcf3260` |
+  |---|---:|---:|
+  | first logits after a 172K prompt | - | differ: KL 0.0021, same top 5 (upstream's own change: the new reference) |
+  | decode, 6x512 tokens at 172K | 74.9 / 74.5 tok/s | 74.0 / 74.5 tok/s |
+  | 172K cold read (CPU share on) | 78.5 / 78.2 s | 75.5 / 75.5 s (-3.6 %) |
+  | first +4.8K append after it | 6.25-6.42 s | 6.51-6.60 s (+4 %) |
+  | next appends (strict extension) | 5.92 / 6.59 s | 6.03 / 6.55 s |
+
+  With the CPU share off A and B append alike (6.42 / 6.44 s): the gap is the share's - STRATA_PREFILL_TIMING shows
+  B's GPU waiting longer for streamed experts ("wait copy" 311 -> 757 ms) on small chunks, while its expert GEMMs got
+  faster. Only the first append after a cold read pays it, so B was deployed.
 
 ## Settings for this box
 
