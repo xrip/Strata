@@ -28,8 +28,7 @@ Rules that keep the next merge small:
 | commit | what | switch |
 |---|---|---|
 | `7b07ac7` | tokenizer: a long message's ids remembered whole, on top of upstream's piece cache | always |
-| `11a4f15`, `18ec242` | QSA prompt-path block scores: a thread per query head, four lanes per query (Turing) | `STRATA_SCORES_THREAD=0` = old |
-| `1eb1010` | prompt attention, int8 K/V: next chunk in registers, K and V in one buffer (Turing) | none (same bits) |
+| `11a4f15`, `18ec242`, `1eb1010` | Turing prompt scorer and prompt attention: upstream since 0.1.45 (#1825, #1821), in its Turing series | `STRATA_SM75_PERF=1` |
 | `94292d6` | gate/up MMQ reads the experts in place (a patched copy of llama.cpp's `mmq.cuh` in the build tree) | `STRATA_MMQ_INPLACE=0` = old |
 | `e8f68e0`, `cc3fd60`, `3a5e69e`, `8f93be3` | `dual3090/verify/`: agentbench (gate and compare), flashbench corpus, prefill_probe; `prefill_mmq_bench` | tools |
 | `3fcb526`..`f72cce9` (upstream PR #1937) | the disk tier of the parked conversations (`conversation_disk.hpp`), below | `--conversation-disk-dir DIR` (off by default) |
@@ -127,7 +126,8 @@ with timing): that run-to-run variation is the engine's, not the cache's.
 
 Upstream measures per-architecture tables and kernel modes on the cards it has; Turing had none. On a CMP 50HX:
 `mmvq_il_parity --bench --emit-table` (parity OK for every case, bitwise) gave `kIlRows_75` / `kIl1Rows_75` (IQ4_XS
-2560x10240 at 4 columns 94.6 -> 35.6 us, the Q5_K head at 3 columns 1781 -> 1097 us), opt-in `STRATA_SM75_TABLE=1`.
+2560x10240 at 4 columns 94.6 -> 35.6 us, the Q5_K head at 3 columns 1781 -> 1097 us), opt-in `STRATA_SM75_TABLE=1`
+(0.1.45: replaced by upstream's own sm_75 table, measured on an RTX 2080 Ti, under `STRATA_SM75_PERF=1`).
 `native_expert_bench` over all 48 layers, mode 0 against `STRATA_EXP_MODE=8` (Volta's and the P100's layout, already
 in the code): bitwise equal everywhere; gate/up IQ3_S / IQ2_S / IQ2_XXS / IQ3_XXS -27..-42 % at 4 tokens, down Q2_0
 -9..-12 %, but IQ2_XS gate/up +19 % at 1 token and IQ4_NL down +31 % at 4 tokens (a per-type rule would keep those on
@@ -273,6 +273,22 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
   With the CPU share off A and B append alike (6.42 / 6.44 s): the gap is the share's - STRATA_PREFILL_TIMING shows
   B's GPU waiting longer for streamed experts ("wait copy" 311 -> 757 ms) on small chunks, while its expert GEMMs got
   faster. Only the first append after a cold read pays it, so B was deployed.
+- 0.1.45 (`477ac13c`, 264 upstream commits, 2026-10-17, merge `0040d8f1`): upstream took the Turing kernels this fork
+  had (#1821 #1825 #2069-#2072 #2081 #2091 #2093 #2220-#2222) as one opt-in, `STRATA_SM75_PERF=1`; their versions were
+  kept in the conflicts, and upstream's sm_75 table replaces ours (`STRATA_SM75_TABLE` is gone). Our `STRATA_EXP_MODE=8`
+  still wins over the series' mode 4. The disk tier's eviction hook sits on upstream's new `evict_oldest`, and a disk
+  read-back never borrows (#1164). Box A/B against the deployed `44f7bb6e`, gate config, two runs each:
+
+  | | A `44f7bb6e` | B `0040d8f1` + `STRATA_SM75_PERF=1` |
+  |---|---:|---:|
+  | first logits after a 172K prompt | - | differ: KL 0.0057, same top 5 (upstream: the new reference) |
+  | decode, 6x512 tokens at 172K | 74.54 / 74.63 tok/s | 74.09 / 74.13 tok/s (fewer drafts accepted: 1,882 vs 1,930) |
+  | decode, ms per verify window | 36.0 | 34.8 (-3 %) |
+  | 172K cold read (CPU share on) | 75.16 / 75.18 s | 74.28 / 74.23 s (-1.2 %) |
+  | appends of 4.8 / 9.3 / 14.5K at 172K depth | 6.52 / 10.79 / 12.58 s | 6.47 / 10.53 / 12.47 s (-0.8 / -2.4 / -0.8 %) |
+
+  `STRATA_SPLIT_OVERLAP=1` (the overlapped layer-split hand-off, +32 % decode on two RX 7900 XTX): 74.12 / 74.07 tok/s,
+  35.0 ms per window - nothing here, not used.
 
 ## Settings for this box
 
@@ -284,7 +300,7 @@ Build: `-DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_ISA_FLOOR
 
 ```json
 "env": {"STRATA_BF16_TC": "1", "STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_CPU_SHARE_MAX": "8192",
-        "STRATA_ROUTE_TAIL_SKIP": "0"}
+        "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_SM75_PERF": "1", "STRATA_EXP_MODE": "8"}
 ```
 
 and in `"args"` the conversation cache, so an agent's main conversation and its sub-agents do not evict each other:
