@@ -1097,7 +1097,10 @@ seconds, paid for with disk space within `--conversation-disk-mib`.
 - on QUIT (the server's stop, Ctrl+C, SIGTERM) the engine parks the current conversation, moves every parked one to
   the disk and waits for the writes before it ends; the server waits up to 300 s for that (20 s otherwise). Ctrl+C in
   the server's terminal no longer ends the engine directly (it is in the server's process group): the server's QUIT
-  does, after the save; a second Ctrl+C still ends it at once. A crash or `kill -9` keeps what was already written.
+  does, after the save; a second Ctrl+C still ends it at once. The same for the SIGTERM a shutdown sends every
+  process (systemd) and a closed terminal's SIGHUP: the engine ends only through its stdin (the server's QUIT, or EOF
+  when the server is gone), after the save. Before, a poweroff with the server running ended the engine at once and
+  lost every conversation of that run. A crash or `kill -9` keeps what was already written.
 
 Measured on the same box (one RAM slot; the 165,557-token conversation L current at the stop, two 42K-token ones
 parked): the save at the stop took 6.8 s (L written in 2.9 s, 2,639 MiB at 956 MB/s); the next start took in 3
