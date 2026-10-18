@@ -8897,7 +8897,13 @@ int main(int argc, char** argv) {
             std::string id_err;
             disk_opts.persist = session_identity(disk_opts.identity, id_err, {});
             if (disk_opts.persist) {
-                std::signal(SIGINT, SIG_IGN);   // Ctrl+C reaches the engine too: the server's QUIT ends it, after the save
+                // the engine ends only through its stdin (the server's QUIT, or EOF when the server is gone), after the
+                // save: Ctrl+C, a shutdown's SIGTERM to every process and a closed terminal's SIGHUP reach it too
+                std::signal(SIGINT, SIG_IGN);
+                std::signal(SIGTERM, SIG_IGN);
+#if defined(SIGHUP)
+                std::signal(SIGHUP, SIG_IGN);
+#endif
             } else {
                 std::fprintf(stderr, "strata serve: conversation disk: not persistent (%s)\n", id_err.c_str());
             }

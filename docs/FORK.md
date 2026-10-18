@@ -97,7 +97,9 @@ engine ended. Sent upstream as PR #1937.
 the engine. The files are bound to the
 session files' identity (model, engine version, settings); an index per conversation lets the next start take them in;
 no time limit (the budget alone); on QUIT the current and every parked conversation go to the disk first (the server
-waits up to 300 s; the engine ignores a terminal's SIGINT so the save is not cut short). On the box (2026-10-11): the
+waits up to 300 s; the engine ignores SIGINT, SIGTERM and SIGHUP and ends only through its stdin, so neither Ctrl+C nor
+a poweroff's SIGTERM to every process cuts the save short - until 2026-10-18 a poweroff ended the engine first and lost
+the run's conversations). On the box (2026-10-11): the
 save at the stop 6.8 s (a 165K-token current conversation and two parked 42K ones), the next start took in 3
 conversations (4,311 MiB), and all three came back from the disk with the same answers - the 165K one in 6.7 s instead
 of 77.6 s.
