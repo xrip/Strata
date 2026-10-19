@@ -3,7 +3,7 @@
 Upstream is [Niko1221/Strata](https://github.com/Niko1221/Strata); this fork is
 [xrip/Strata](https://github.com/xrip/Strata), a direct GitHub fork of it:
 
-- `main`: upstream `main` (0.1.42, `61b3fb5d`) plus a short list of patches for this box;
+- `main`: upstream `main` (0.2.0-beta, `f57c0adc`) plus a short list of patches for this box;
 - `pr/*`: each generic patch on top of upstream `main`, sent upstream as a PR;
 - tags `cmp50hx-*`: measured snapshots (`cmp50hx-2026-10-10`: the settings below).
 
@@ -291,6 +291,39 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
 
   `STRATA_SPLIT_OVERLAP=1` (the overlapped layer-split hand-off, +32 % decode on two RX 7900 XTX): 74.12 / 74.07 tok/s,
   35.0 ms per window - nothing here, not used.
+- 0.2.0-beta (`f57c0adc`, 786 upstream commits, 96 of them in the engine, 2026-10-19, merge `098f475e`): mostly the
+  desktop app, Gyro's trellis packs, Volta / Pascal / sm_120 / gfx12 / Arc kernels and the Linux file tier (a GGUF read
+  in place only). Conflicts kept both sides: `nv_defaults.cpp` beside `conversation_disk.cpp`, the adaptive tier's wait
+  line beside our disk note, `end_leftover_engines` beside the persist QUIT wait (`ENGINE_QUIT_WAIT_S` when off). The
+  version change (0.1.45 -> 0.1.45.3) makes the disk tier refuse the saved conversations once. For this box: upstream's
+  new CPU pool default stays on the main thread's socket - 9 workers here instead of 19 - and decode at 172K fell 12.6 %;
+  `--pool-workers 19` gives the old count back (the first logits do not depend on the count). Box A/B against the
+  deployed `7a922860`, gate config (reads with the live CPU share), interleaved, after a reboot:
+
+  | | A `7a922860` | B `098f475e` (9 workers) | B + `--pool-workers 19` |
+  |---|---:|---:|---:|
+  | first logits (CPU share 0) | - | differ: KL 0.0057 after 172K, 0.0019 after 245 tokens, same top 5 | as B |
+  | 42K cold read | 21.87 / 21.89 s | 21.95 / 22.11 s | 21.86 / 22.08 s |
+  | 172K cold read | 74.41 / 74.34 s | 74.23 / 74.08 s | 74.10 / 74.12 s |
+  | decode, 6x512 tokens at 172K | 74.96 tok/s | 65.51 tok/s (-12.6 %) | 75.08 tok/s |
+
+  The logits differ with our switches off too (`STRATA_SM75_PERF=0`, `STRATA_EXP_MODE=0`, `STRATA_BF16_TC=0`): upstream's
+  own change, the new reference. At 42K, `STRATA_PREFILL_TIMING` (2 runs each): GPU timeline +0.4 %, the expert GEMMs,
+  attention, GDN and dequant within 0.3 %; the rest is upstream's new accounting (`hc write` on its own line, the first
+  chunk's PLE wait on the `ple` line).
+
+  Upstream's opt-in exact decode switches on B + 19 workers, one run each, ms per verify window against the base's 34.91:
+  `STRATA_ATTN_DAILY=1` -1.4 %, `STRATA_SIDE_MIXER=2` -1.3 %, `STRATA_B6_MMVQ_ROWS=1` -0.7 %, `STRATA_ARGMAX_ROWS_SM70=1`
+  -0.3 %, `STRATA_GR_NORM_FAST=1` -0.1 %, `STRATA_QSA_ROWS=1` +0.5 %, `STRATA_GU_SWIGLU=1` +1.2 % (`STRATA_FUSE_DECODE` is
+  in the experimental Pascal / Volta build only, `STRATA_CPU_IQ_ALL_EXACT1` needs AVX2). Exactness on the CMP 50HX:
+  `qsa_merge_daily_parity` 1,172 cases bit-identical on both cards, `b6_mmvq_bench` every output bit-identical, the side
+  mixer runs the same kernels on branches of the window's graph. The three together, 3 interleaved rounds:
+
+  | | B + 19 workers | + `SIDE_MIXER=2` `ATTN_DAILY=1` `B6_MMVQ_ROWS=1` |
+  |---|---:|---:|
+  | decode, 6x512 tokens at 172K | 75.13 / 74.87 / 75.11 tok/s | 77.03 / 77.15 / 77.17 tok/s (+2.8 %) |
+  | ms per verify window | 34.86 / 34.71 / 34.99 | 34.17 / 34.27 / 34.29 (-1.7 %) |
+  | 172K cold read (CPU share 0) | 73.33 / 74.07 / 73.60 s | 73.83 / 73.47 / 73.64 s |
 
 ## Settings for this box
 
@@ -302,8 +335,12 @@ Build: `-DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_ISA_FLOOR
 
 ```json
 "env": {"STRATA_BF16_TC": "1", "STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_CPU_SHARE_MAX": "8192",
-        "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_SM75_PERF": "1", "STRATA_EXP_MODE": "8"}
+        "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_SM75_PERF": "1", "STRATA_EXP_MODE": "8",
+        "STRATA_SIDE_MIXER": "2", "STRATA_ATTN_DAILY": "1", "STRATA_B6_MMVQ_ROWS": "1"}
 ```
+
+and `"--pool-workers", "19"` in `"args"` (since 0.2.0-beta the default is the main thread's socket only: 9 workers, decode
+-12.6 % here; see Syncs).
 
 and in `"args"` the conversation cache, so an agent's main conversation and its sub-agents do not evict each other:
 
