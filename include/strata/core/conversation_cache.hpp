@@ -391,9 +391,9 @@ public:
     // the same conversation a turn back, whose DEEPEST checkpoint the outgoing chain still holds, so all it adds
     // is the tail the client rewrote (the reply as it was generated, before the next request re-rendered it) and
     // checkpoints older than that one.  A subagent's successive turns parked one such copy each, and make_room's
-    // oldest-first eviction then pushed the parent conversation out after `slots` turns.  Also superseded: an older
-    // state of this conversation, shorter, at most a tenth of its tokens not in the outgoing ones (rewritten turns back, when
-    // the outgoing chain's spread checkpoints no longer hold one near its end).  An entry without checkpoints, or
+    // oldest-first eviction then pushed the parent conversation out after `slots` turns.  Also superseded: an older,
+    // shorter state of this conversation with at most a tenth of its tokens not in the outgoing ones (rewritten turns
+    // back, when the chain's spread checkpoints no longer hold one near its end).  An entry without checkpoints, or
     // another conversation that only shares the system prompt's root with it, is kept.  Returns how many were dropped.
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
                            const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
@@ -442,14 +442,14 @@ private:
                                 const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
         const ConversationCheckpoint* deepest = nullptr;
         for (const auto& c : e.checkpoints)
-            if (!c.ids.empty() && (!deepest || c.ids.size() > deepest->ids.size())) deepest = &c;
-        if (e.cvec != cvec || !deepest) return 0;
+            if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+        if (e.cvec != cvec || !deepest || deepest->ids.empty()) return 0;
         bool held = deepest->ids == ids && deepest->imgs == images;
         for (const auto& k : checkpoints)
             if (!held && k.ids == deepest->ids && k.imgs == deepest->imgs) held = true;
         if (held) return deepest->ids.size();
-        const size_t n = e.live.ids.size(), shared = (size_t) shared_prefix(e.live.ids, ids);
-        return ids.size() > n && n - shared <= n / 10 ? shared : 0;
+        const size_t tokens = e.live.ids.size(), shared = (size_t) shared_prefix(e.live.ids, ids);
+        return ids.size() > tokens && tokens - shared <= tokens / 10 ? shared : 0;
     }
     void erase(size_t index) {
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);

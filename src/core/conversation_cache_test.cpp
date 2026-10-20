@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <numeric>
 #include <vector>
 
 using namespace strata::core;
@@ -283,10 +284,10 @@ int main() {
               "an oversized put drops nothing");
     }
     {
-        // an older, shorter state of this conversation, rewritten from token 36 on, and the outgoing chain holds only the
-        // root (spread checkpoints thinned out).  At most a tenth of its tokens not in the outgoing ones: superseded; more: kept.
+        // an older, shorter state of this conversation, rewritten from token 36 on; the outgoing chain holds only the
+        // root (spread checkpoints thinned out).  At most a tenth of its tokens not shared: superseded; more: kept.
         auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
-        auto first = [](int32_t n) { std::vector<int32_t> v(n); for (int32_t i = 0; i < n; ++i) v[i] = i + 1; return v; };
+        auto first = [](int32_t n) { std::vector<int32_t> v(n); std::iota(v.begin(), v.end(), 1); return v; };
         std::vector<int32_t> rewritten = first(36);   // and grown past the old state since
         rewritten.insert(rewritten.end(), {900, 901, 902, 903, 904, 905, 906, 907, 908, 909});
         const std::vector<ConversationCheckpoint> chain = {cp(first(4))};
