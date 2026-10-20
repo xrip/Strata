@@ -59,6 +59,11 @@ Latency, by design:
   at all (a "RAM hit"); one being written is waited for, then read.
 - **RAM:** a queued image holds its RAM until its write ends. When RAM is short (parking a conversation, or reading
   one back), the engine first waits for the queued writes (their RAM comes back) and only then evicts more.
+- **No useless disk work (2026-10-20).** An older copy of the same conversation, rewritten a few turns back (at most a
+  tenth of it past a checkpoint the outgoing chain holds), is dropped when parking instead of evicted to the disk: on
+  the HDD two such writes held the next park 30 and 32 s. A file is read only when that is faster than reading the
+  tokens it adds, by this run's measured disk and prompt speeds: a new conversation that shares only the 16K-token
+  system prompt with a saved one no longer reads its whole 6 GB file.
 - **Smaller files:** only the live state and the deepest checkpoint are written (the session files' rule: the
   earlier checkpoints serve edits further back and cost ~118 MB each here).
 - mmap would not help: the restore validates the whole image before the first device write (fail-closed), so every
@@ -346,8 +351,13 @@ and in `"args"` the conversation cache, so an agent's main conversation and its 
 
 ```json
 "--conversation-cache-mib", "8192", "--conversation-cache-slots", "3", "--conversation-cache-min-tokens", "32768",
-"--conversation-disk-dir", "/home/xrip/strata/conversation-cache", "--conversation-disk-persist", "exit-only", "--prompt-cache-spread"
+"--conversation-disk-dir", "/mnt/hdd12tb/conversation-cache", "--conversation-disk-persist", "on", "--prompt-cache-spread"
 ```
+
+The disk tier is on a 12 TB 7200 rpm HDD since 2026-10-20 (`exit-only` before): a main conversation of ~265-340K
+tokens (5.2-6.3 GB parked) and two parallel sub-agents (~2.6 GB each) do not fit the 8 GiB, and `exit-only` drops what
+it evicts (each next request of the main conversation read ~265K tokens again, 122 s; 8 times in 1.5 h). Back from the
+HDD: 286,199 tokens, 5,352 MiB read in 32.8 s plus 8.9 s GPU restore. Not the NVMe: ~60 GB/h of writes in such a session.
 
 Without it the engine keeps one conversation: in an agent session every switch between the main conversation
 (~155K tokens) and a sub-agent re-read the whole prompt (~77 s). Checked on the box: conversation A (41,854 tokens)
