@@ -337,6 +337,10 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
   `--batch`. One conflict: upstream split `serve/test_parallel.py`, so our usage assertion (PR #2290) moved to
   `serve/test_parallel_yield.py`. The engine version is 0.1.46: the conversations saved on the disk are refused once,
   at the first start of the new engine.
+- 0.2.1.3 (`5b47f889`, 49 upstream commits, 2026-10-20): Terminal, setup, Control and the server. Upstream merged our
+  #2290 (Anthropic `cache_creation_input_tokens`) and #2140 (`thinking_budget_tokens`); the one conflict takes upstream's
+  form, so the fork no longer differs there. Engine: only the version (0.1.46.2) on this box; the other changes are HIP
+  / Windows only, so no speed A/B. The version change makes the disk tier refuse the saved conversations once.
 
 ## Settings for this box
 
