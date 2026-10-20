@@ -329,6 +329,14 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
   | decode, 6x512 tokens at 172K | 75.13 / 74.87 / 75.11 tok/s | 77.03 / 77.15 / 77.17 tok/s (+2.8 %) |
   | ms per verify window | 34.86 / 34.71 / 34.99 | 34.17 / 34.27 / 34.29 (-1.7 %) |
   | 172K cold read (CPU share 0) | 73.33 / 74.07 / 73.60 s | 73.83 / 73.47 / 73.64 s |
+- 0.2.1 (`90767252`, 98 upstream commits, 2026-10-20): app, AMD, integrated GPUs, Windows and Docker. The engine
+  changes (18 files) are for AMD, integrated GPUs, hybrid Intel CPUs, the file tier and `--batch`, none on this box's
+  path, so there was no speed A/B. The smaller VRAM reserve on a card that drives no display (512 MiB, 700 with pictures):
+  our engine already ran with 700 MiB (`--vision`), and CUDA1 has only ~386 MiB free after loading. I/O prefetch and
+  the drive probe are for models read in place; ours sit in the pinned arena. The two-card batch default needs
+  `--batch`. One conflict: upstream split `serve/test_parallel.py`, so our usage assertion (PR #2290) moved to
+  `serve/test_parallel_yield.py`. The engine version is 0.1.46: the conversations saved on the disk are refused once,
+  at the first start of the new engine.
 
 ## Settings for this box
 
