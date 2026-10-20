@@ -448,8 +448,9 @@ private:
         for (const auto& k : checkpoints)
             if (!held && k.ids == deepest->ids && k.imgs == deepest->imgs) held = true;
         if (held) return deepest->ids.size();
-        const size_t tokens = e.live.ids.size(), shared = (size_t) shared_prefix(e.live.ids, ids);
-        return ids.size() > tokens && tokens - shared <= tokens / 10 ? shared : 0;
+        const auto& own = e.live.ids;
+        const size_t shared = std::mismatch(own.begin(), own.end(), ids.begin(), ids.end()).first - own.begin();
+        return ids.size() > own.size() && own.size() - shared <= own.size() / 10 ? shared : 0;
     }
     void erase(size_t index) {
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
