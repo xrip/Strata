@@ -59,9 +59,9 @@ Latency, by design:
   at all (a "RAM hit"); one being written is waited for, then read.
 - **RAM:** a queued image holds its RAM until its write ends. When RAM is short (parking a conversation, or reading
   one back), the engine first waits for the queued writes (their RAM comes back) and only then evicts more.
-- **No useless disk work (2026-10-20).** An older copy of the same conversation, rewritten a few turns back (at most a
-  tenth of it past a checkpoint the outgoing chain holds), is dropped when parking instead of evicted to the disk: on
-  the HDD two such writes held the next park 30 and 32 s. A file is read only when that is faster than reading the
+- **No useless disk work (2026-10-20).** An older copy of the same conversation, rewritten turns back (at most a tenth
+  of its tokens not in the outgoing conversation's), is dropped when parking instead of evicted to the disk: on the
+  HDD such writes held the next park 30, 32 and 41 s. A file is read only when that is faster than reading the
   tokens it adds, by this run's measured disk and prompt speeds: a new conversation that shares only the 16K-token
   system prompt with a saved one no longer reads its whole 6 GB file.
 - **Smaller files:** only the live state and the deepest checkpoint are written (the session files' rule: the

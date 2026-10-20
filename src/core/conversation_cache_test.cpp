@@ -283,13 +283,13 @@ int main() {
               "an oversized put drops nothing");
     }
     {
-        // the same conversation rewritten a few turns back: the outgoing chain holds the entry's checkpoint at token
-        // 36 but not its deepest.  At most a tenth of the entry past token 36: superseded; more: kept.
+        // an older, shorter state of this conversation, rewritten from token 36 on, and the outgoing chain holds only the
+        // root (spread checkpoints thinned out).  At most a tenth of its tokens not in the outgoing ones: superseded; more: kept.
         auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
         auto first = [](int32_t n) { std::vector<int32_t> v(n); for (int32_t i = 0; i < n; ++i) v[i] = i + 1; return v; };
-        std::vector<int32_t> rewritten = first(36);
-        rewritten.insert(rewritten.end(), {900, 901, 902});
-        const std::vector<ConversationCheckpoint> chain = {cp(first(4)), cp(first(36))};
+        std::vector<int32_t> rewritten = first(36);   // and grown past the old state since
+        rewritten.insert(rewritten.end(), {900, 901, 902, 903, 904, 905, 906, 907, 908, 909});
+        const std::vector<ConversationCheckpoint> chain = {cp(first(4))};
         size_t reported = 0;
         auto superseded_after_rewrite = [&](int32_t tokens) {
             ConversationCache cache(1 << 20, 8);
@@ -304,8 +304,8 @@ int main() {
             cache.put(std::move(now));
             return cache.superseded();
         };
-        check(superseded_after_rewrite(40) == 1 && reported == 36, "4 of 40 tokens past the held checkpoint: dropped");
-        check(superseded_after_rewrite(41) == 0 && reported == 0, "5 of 41 tokens past it: kept");
+        check(superseded_after_rewrite(40) == 1 && reported == 36, "4 of 40 tokens not shared: dropped");
+        check(superseded_after_rewrite(41) == 0 && reported == 0, "5 of 41 tokens not shared: kept");
     }
     {
         // --conversation-cache-park-gain N: parked_prefix_tokens reports what a park now would supersede, so a
