@@ -341,6 +341,25 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
   #2290 (Anthropic `cache_creation_input_tokens`) and #2140 (`thinking_budget_tokens`); the one conflict takes upstream's
   form, so the fork no longer differs there. Engine: only the version (0.1.46.2) on this box; the other changes are HIP
   / Windows only, so no speed A/B. The version change makes the disk tier refuse the saved conversations once.
+- 0.2.2 (`011c9e60`, 242 upstream commits, 2026-10-22): engine 0.1.47. For this box the one engine change is the CPU
+  pool: the NUMA split (#3201) now turns on by itself with 2 NUMA nodes. Here it makes 2 slices of 10 threads and puts
+  `--pool-workers 19` on the sockets in turn (1,10,2,11,...); the experts come from the arena, so their memory is not
+  placed per node (the engine says so). The rest is Gyro / trellis, Metal, SYCL, AMD, setup and docs. One conflict:
+  upstream's `engine_nice` beside our persist QUIT wait in `server.py`. Box A/B (`~/opt-avx1/ab_022.sh`, gate config:
+  swaps off, `--pcie-frac 0.17`), A = the deployed 0.1.46 (`49b4bafb`), N = this merge, N0 = N + `STRATA_NUMA_POOL=0`:
+
+  | | A | N (split on) | N0 (split off) |
+  |---|---:|---:|---:|
+  | first logits (CPU share 0, warm-up and 172K) | - | bit-identical to A | bit-identical to A |
+  | 42K cold read, 2 rounds | 21.91 / 21.98 s | 21.97 / 22.05 s | 21.93 / 22.04 s |
+  | 172K cold read, 2 rounds | 74.54 / 74.25 s | 74.16 / 74.12 s | 74.47 / 74.18 s |
+  | decode, 6x512 tokens at 172K, 2 rounds | 75.64 / 76.85 tok/s | 76.58 / 77.75 tok/s | 76.90 / 76.94 tok/s |
+  | experts loaded at start | 43-60 s | 43-61 s | 44-52 s |
+
+  No change outside the noise (A's own rounds differ by 1.6 % in decode); the split stays at upstream's default. The
+  decode texts are not a check here: the same binary gave different answers 3 and 4 in its two rounds (late, after
+  ~1,000 characters). Upstream's `pool_tasks_test` and `pool_cores_test` fail on this box: they expect a one-node
+  machine (the real pool here has the split on); not an engine fault.
 
 ## Settings for this box
 
