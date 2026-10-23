@@ -360,6 +360,27 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
   decode texts are not a check here: the same binary gave different answers 3 and 4 in its two rounds (late, after
   ~1,000 characters). Upstream's `pool_tasks_test` and `pool_cores_test` fail on this box: they expect a one-node
   machine (the real pool here has the split on); not an engine fault.
+- 0.2.3 (`5c8dd322`, 127 upstream commits, 2026-10-23): engine 0.1.48. No conflicts. For this box: the hyper-connection
+  read (`gr_read`, decode and the MTP layer) starts 4 kernels instead of 6, bitwise the same. The DFlash2 drafter
+  (`--draft dflash2`) is for one card and the CLI in this build (not `--serve` or a layer split), so not for this box.
+  `STRATA_SPEC_COST=1` (opt-in): the MTP window by expected tokens per ms at the measured row costs. The rest is Strix
+  Halo, Arc, Metal, the app and the Terminal. Box A/B (`~/opt-avx1/ab_023.sh`, gate config: swaps off,
+  `--pcie-frac 0.17`, `numactl --interleave=all` as the live start), A = the deployed 0.2.2 (`aeb84ae8`), N = this
+  merge, NC = N + `STRATA_SPEC_COST=1`:
+
+  | | A | N | NC |
+  |---|---:|---:|---:|
+  | 42K cold read, 2 rounds | 22.00 / 22.01 s | 22.12 / 22.12 s (+0.5 %) | - |
+  | 172K cold read, 2 rounds | 74.15 / 74.38 s | 74.30 / 74.61 s (+0.3 %) | - |
+  | decode, 6x512 tokens at 172K, 2 rounds | 77.75 / 77.77 tok/s | 76.63 / 76.98 tok/s | 77.19 / 77.86 tok/s |
+  | the same, answers 1-5 (answer 6 is another text in N and NC) | 76.68 / 76.74 tok/s | 76.67 / 77.09 tok/s | 77.10 / 78.19 tok/s |
+  | drafts accepted / drafted | 1,895 / 2,711 | 1,880 / 2,757 | 1,747 / 2,262 |
+
+  No regression in decode; the reads are 0.3-0.5 % slower in both rounds (the prompt path's code is the same with no
+  DFlash2 taps asked for). `STRATA_SPEC_COST=1` drafts shorter windows (30 against 34 ms per window): +1 % decode, inside
+  the noise, and its answers differ between its own two runs (the window follows the measured times), so it is not
+  used. Upstream's `conversation_snapshot_test` fails while the live engine shares the card and passes on a free one;
+  `pool_tasks_test` / `pool_cores_test` fail as in 0.2.2.
 
 ## Settings for this box
 
