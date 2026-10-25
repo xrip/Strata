@@ -381,6 +381,24 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
   the noise, and its answers differ between its own two runs (the window follows the measured times), so it is not
   used. Upstream's `conversation_snapshot_test` fails while the live engine shares the card and passes on a free one;
   `pool_tasks_test` / `pool_cores_test` fail as in 0.2.2.
+- 0.2.4.2 (`7dd5cf18`, 287 upstream commits, 2026-10-25): engine 0.1.49.2. Almost all of it is the DeepSeek-V4.1-Flash
+  engine (`strata-dsv41`, a separate build, `-DSTRATA_BUILD_DSV41=ON`, off by default). For the Qwen path only CPU rows
+  for AVX2 / AVX-512 (not run on these AVX1 Xeons), the trellis encoder and `STRATA_ACT_DUMP` (research, off). No
+  conflicts. Box A/B (`~/opt-avx1/ab_024.sh`, gate config, no `numactl`), A = the deployed 0.2.3 (`e55109f7`), N = this
+  merge:
+
+  | | A | N |
+  |---|---:|---:|
+  | 42K cold read, 2 rounds | 22.16 / 22.55 s | 22.17 / 22.59 s |
+  | 172K cold read, 2 rounds | 74.02 / 74.76 s | 74.29 / 74.24 s |
+  | decode, 6x512 tokens at 172K, 1 round (stopped: no difference) | 71.82 tok/s | 71.85 tok/s |
+
+  No change. Decode is lower than in the 0.2.3 A/B (77 tok/s) for both builds: since 2026-10-23 node 0 has a 32 GB and a
+  16 GB stick, its top 16 GiB (physical 34-50 GiB) is on one channel, and without `numactl` this start put 28 % of the
+  arena there (`~/opt-avx1/physmap.py`; the live start of 2026-10-23 had none there). `conversation_snapshot_test`
+  fails by timing: after `f.fill(177)` (a `cudaMemcpy` from pageable memory, whose DMA can land after the call returns)
+  the test saves and restores on the snapshot's non-blocking stream without the device synchronization the snapshot
+  functions ask for. With `cudaDeviceSynchronize()` after that fill it passed 10 of 10 runs (3 of 3 failed without).
 
 ## Settings for this box
 
