@@ -399,6 +399,11 @@ cache already hitting 97-99 %); agentbench gives too few long answers to see a f
   fails by timing: after `f.fill(177)` (a `cudaMemcpy` from pageable memory, whose DMA can land after the call returns)
   the test saves and restores on the snapshot's non-blocking stream without the device synchronization the snapshot
   functions ask for. With `cudaDeviceSynchronize()` after that fill it passed 10 of 10 runs (3 of 3 failed without).
+- 0.2.6 (`4b9e05a2`, 163 upstream commits, 0.2.5 and 0.2.6, 2026-10-26): engine 0.1.51. No conflicts. Again mostly the
+  DeepSeek engine. For the Qwen path: the adaptive tier picks its asynchronous mode by measurement, but only on one GPU
+  (it says "a layer split" and stays off here); 512-bit CPU expert rows (AVX-512 only); two small server fixes (a chat
+  request with no message is a 400; no tok/s for a one-token reply). No speed A/B (nothing on this box's path changed);
+  builds on the box, the CPU unit tests (24, with `adapt_async_default_test`) and serve 379 pass.
 
 ## Settings for this box
 
