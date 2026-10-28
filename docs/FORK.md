@@ -35,7 +35,7 @@ on this CPU they stop at start). The config (`strata-iq3_xxs.json`), on top of w
 "env": {"STRATA_BF16_TC": "1", "STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_CPU_SHARE_MAX": "8192",
         "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_SM75_PERF": "1", "STRATA_EXP_MODE": "8",
         "STRATA_SIDE_MIXER": "2", "STRATA_ATTN_DAILY": "1", "STRATA_B6_MMVQ_ROWS": "1",
-        "STRATA_PREFILL_LAYER_MAJOR": "0"},
+        "STRATA_PREFILL_LAYER_MAJOR": "0", "STRATA_SPLIT_MTP_BATCH": "1"},
 "args": [..., "--pool-workers", "19", "--max-context", "393216", "--kv", "int8",
          "--conversation-cache-mib", "16384", "--conversation-cache-slots", "16", "--conversation-cache-min-tokens", "32768",
          "--conversation-disk-dir", "/mnt/hdd12tb/conversation-cache", "--conversation-disk-persist", "on",
@@ -45,6 +45,11 @@ on this CPU they stop at start). The config (`strata-iq3_xxs.json`), on top of w
 - `STRATA_PREFILL_LAYER_MAJOR=0`: 0.2.7 reads a long prompt layer by layer on a CUDA layer split by default; here it
   is off by itself only because CUDA1 has ~450 MiB free. Forced on (2 GB VRAM kept free): a 64K prompt 53.0 s against
   30.5 s (it streams ~74 GB of experts over PCIe 2.0; the chunk path with the CPU share does better), decode 2 % slower.
+- `STRATA_SPLIT_MTP_BATCH=1`: on a layer split the draft layer's prompt K/V was built by its own pass, 8 rows at a
+  time, while the next chunk waited (405-473 ms per 8K chunk in a `STRATA_PREFILL_TIMING` run); this builds it in one
+  batched pass on CUDA1. Only the drafts can change, not the model's tokens. A 64K cold read 30.70 / 30.61 s against
+  29.19 / 29.46 s (-4.3 %), decode at 8K 93.4 against 94.8 tok/s, 28.45 against 28.35 ms per verify window
+  (2026-10-28, four starts A / B / A / B).
 - `STRATA_ROUTE_TAIL_SKIP=0` keeps the model's exact output (the tail skip gave nothing here).
 - Pictures: the CUDA picture reader (`build-vision-cuda/bin/strata-vision`) on the third card (`vision.cuda_device: 2`).
   Layers or a helper cache on that x1 card were slower.
