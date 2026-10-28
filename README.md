@@ -5,6 +5,59 @@
   </picture>
 </p>
 
+## This fork: Strata on 2x CMP 50HX
+
+[xrip/Strata](https://github.com/xrip/Strata) is [Niko1221/Strata](https://github.com/Niko1221/Strata) with one patch
+(parked conversations on a disk) and the settings measured fastest on one box: 2x Xeon E5-2670 v2 (AVX only, 2 NUMA
+nodes), 80 GB DDR3-1866, 2x CMP 50HX (Turing sm_75, 20 GB) on a layer split over PCIe 2.0 x16, a third CMP 50HX
+(10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS. The rest of this README is upstream's; the patch, the build
+and the syncs are in [docs/FORK.md](docs/FORK.md).
+
+**Gain over upstream** (engine 0.2.7, 2026-10-28; a 64K-token prompt read cold, then 6 x 512 tokens of decode at ~8K
+context; ranges are separate starts):
+
+| | 64K prompt | Decode | ms per verify window |
+|---|---:|---:|---:|
+| Upstream, setup's settings (`--gpus 0,1`) | 43.66-43.70 s | 78.7-78.9 tok/s | 34.4-34.8 |
+| + this config without `STRATA_SPLIT_MTP_BATCH` | 30.48-30.56 s | 91.6-93.0 tok/s | 27.9-28.5 |
+| This config (the live one) | 29.19-29.46 s | 94.8 tok/s | 28.35 |
+
+The prompt reads 1.48-1.50x faster and decode is ~1.20x. Decode of one config moves ~2 % from start to start here
+(where the expert memory lands in RAM).
+
+The config (`strata-iq3_xxs.json`), on top of what setup writes:
+
+```json
+"gpu": [0, 1], "layer_split": "auto",
+"env": {"STRATA_BF16_TC": "1", "STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_CPU_SHARE_MAX": "8192",
+        "STRATA_SM75_PERF": "1", "STRATA_EXP_MODE": "8",
+        "STRATA_SIDE_MIXER": "2", "STRATA_ATTN_DAILY": "1", "STRATA_B6_MMVQ_ROWS": "1",
+        "STRATA_SPLIT_MTP_BATCH": "1", "STRATA_PREFILL_LAYER_MAJOR": "0",
+        "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_ROUTE_PRIOR": "0"},
+"args": [..., "--pool-workers", "19", "--max-context", "393216", "--kv", "int8",
+         "--conversation-cache-mib", "16384", "--conversation-cache-slots", "16", "--conversation-cache-min-tokens", "32768",
+         "--conversation-disk-dir", "/mnt/hdd12tb/conversation-cache", "--conversation-disk-persist", "on",
+         "--prompt-cache-spread", "--prompt-cache", "8", "--vision"],
+"vision": {"exe": ".../build-vision-cuda/bin/strata-vision", "gpu": true, "cuda_device": 2, ...}
+```
+
+What each setting does and what it gave here (each measured on the version of its date; the table above is all of
+them together):
+
+| Setting | What it does | Measured on this box |
+|---|---|---|
+| `STRATA_BF16_TC=1`, `STRATA_PREFILL_CPU_SHARE=auto`, `STRATA_PREFILL_CPU_SHARE_MAX=8192` | BF16 projections on the FP16 tensor cores (opt-in on Turing); the CPU computes the experts few prompt tokens route to while the GPUs do the rest, in chunks up to 8,192 tokens (default 1,024) | prompt 708 -> 792 tok/s, +12 % (2026-10-10) |
+| `STRATA_SM75_PERF=1`, `STRATA_EXP_MODE=8` | the bitwise Turing decode kernels and the grouped expert kernel (opt-in upstream) | decode 72.6 -> 80.0 tok/s, +10.3 % (2026-10-12) |
+| `STRATA_SIDE_MIXER=2`, `STRATA_ATTN_DAILY=1`, `STRATA_B6_MMVQ_ROWS=1` | upstream's exact sm_86 decode switches, on sm_75 | decode 75.0 -> 77.1 tok/s, +2.8 % (2026-10-19) |
+| `--pool-workers 19` | CPU expert workers on both sockets; since 0.2.0 upstream picks 9 here (the host's socket only) | decode 65.5 -> 75.1 tok/s, +14.6 % (2026-10-19) |
+| `STRATA_SPLIT_MTP_BATCH=1` | on a layer split, the draft layer's prompt K/V in one batched pass on CUDA1, not 8 rows at a time | 64K prompt -4.3 %, decode same (2026-10-28) |
+| `STRATA_PREFILL_LAYER_MAJOR=0` | keeps the chunked prompt path; 0.2.7's layer-by-layer path streams the experts over PCIe 2.0 | forced on: 64K prompt 53.0 s against 30.5 s (2026-10-28) |
+| `STRATA_ROUTE_TAIL_SKIP=0`, `STRATA_ROUTE_PRIOR=0` | the model's own routing, so the answers stay exact | the tail skip gave no speed here |
+| `"gpu": [0, 1]`, `--layer-split auto` | the two x16 cards share the layers; the x1 card is left out (upstream's setup offers it as a helper) | a helper cache on the x1 card: decode 34-108 % slower (2026-10-18) |
+| conversation cache (16 GiB, 16 slots, from 32K tokens) + `--conversation-disk-dir` (the patch) | parked agent conversations stay in RAM, then on the HDD, and survive a restart | 286,199 tokens back from the HDD in 41.7 s; a cold read ~136 s |
+| `--prompt-cache-spread`, `--prompt-cache 8` | after an agent edits its history, the read restarts near the edit | a 196K conversation reused 187,696 tokens, not a ~100 s re-read |
+| picture reader on CUDA 2 | the x1 card reads pictures; layers on it were slower | a picture 2.8 s -> 0.18 s (2026-10-18) |
+
 <h3 align="center">Run powerful AI on your own computer.</h3>
 <p align="center">Chat, code and work with images, locally.</p>
 

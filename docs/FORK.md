@@ -4,7 +4,8 @@ This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with one patc
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
 
-Base: upstream 0.2.7 (`5e8a4cca`, 2026-10-27). The fork's history before this base (the old patches, every sync and
+Base: upstream 0.2.7.1 (`46c152a1`, merged 2026-10-28: DeepSeek on the Mac and the DGX Spark, nothing on this box's
+path, so the box still runs the 0.2.7 build). The fork's history before this base (the old patches, every sync and
 A/B since 2026-10-10) is the tag `fork-main-2026-10-28`.
 
 ## The patch: parked conversations on a disk
@@ -29,18 +30,8 @@ identity holds the version).
 ## Settings for this box
 
 Build: `-DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_ISA_FLOOR=avx` (the released engines need AVX2:
-on this CPU they stop at start). The config (`strata-iq3_xxs.json`), on top of what setup writes:
-
-```json
-"env": {"STRATA_BF16_TC": "1", "STRATA_PREFILL_CPU_SHARE": "auto", "STRATA_PREFILL_CPU_SHARE_MAX": "8192",
-        "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_SM75_PERF": "1", "STRATA_EXP_MODE": "8",
-        "STRATA_SIDE_MIXER": "2", "STRATA_ATTN_DAILY": "1", "STRATA_B6_MMVQ_ROWS": "1",
-        "STRATA_PREFILL_LAYER_MAJOR": "0", "STRATA_SPLIT_MTP_BATCH": "1"},
-"args": [..., "--pool-workers", "19", "--max-context", "393216", "--kv", "int8",
-         "--conversation-cache-mib", "16384", "--conversation-cache-slots", "16", "--conversation-cache-min-tokens", "32768",
-         "--conversation-disk-dir", "/mnt/hdd12tb/conversation-cache", "--conversation-disk-persist", "on",
-         "--prompt-cache-spread", "--prompt-cache", "8", "--vision"]
-```
+on this CPU they stop at start). The config and what each setting gives here: the top of [README.md](../README.md).
+More on some of them:
 
 - `STRATA_PREFILL_LAYER_MAJOR=0`: 0.2.7 reads a long prompt layer by layer on a CUDA layer split by default; here it
   is off by itself only because CUDA1 has ~450 MiB free. Forced on (2 GB VRAM kept free): a 64K prompt 53.0 s against
