@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -237,6 +238,15 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+// how many leading tokens `a` and `b` have in common
+template<class A, class B>
+int64_t shared_prefix(const std::vector<A>& a, const std::vector<B>& b) {
+    const size_t n = std::min(a.size(), b.size());
+    size_t i = 0;
+    while (i < n && a[i] == b[i]) ++i;
+    return (int64_t) i;
+}
+
 class ConversationCache {
 public:
     struct Match {
@@ -300,6 +310,14 @@ public:
     bool can_fit(size_t incoming, size_t held = 0) const {
         return enabled() && held <= budget_ && incoming <= budget_ - held &&
                entries_.size() < slots_ && bytes() <= budget_ - held - incoming;
+    }
+
+    // the most leading tokens `prompt` has in common with a parked conversation, at a checkpoint or not (diagnostics)
+    template<class Token>
+    int64_t shared_tokens(const std::vector<Token>& prompt) const {
+        int64_t n = 0;
+        for (const auto& e : entries_) n = std::max(n, shared_prefix(e.live.ids, prompt));
+        return n;
     }
 
     template<class Token>
@@ -411,12 +429,17 @@ public:
         for (size_t i = 0; i < entries_.size(); ++i) {
             if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
             bytes_ -= entries_[i].bytes();
+            SavedConversation gone = std::move(entries_[i]);
             erase(i);
             ++evictions_;
+            if (on_evict_) on_evict_(std::move(gone));   // e.g. the disk tier (conversation_disk.hpp); else dropped here
             return true;
         }
         return false;
     }
+
+    /// Where an evicted conversation goes instead of being dropped (the disk tier); it owns the image from then on.
+    void set_on_evict(std::function<void(SavedConversation&&)> fn) { on_evict_ = std::move(fn); }
 
     // #879: every parked conversation (pinned ones too) and the retained K/V go - after non-finite logits any of them
     // may carry the poison.  Returns how many were parked.
@@ -436,24 +459,16 @@ public:
     // the same conversation a turn back, whose DEEPEST checkpoint the outgoing chain still holds, so all it adds
     // is the tail the client rewrote (the reply as it was generated, before the next request re-rendered it) and
     // checkpoints older than that one.  A subagent's successive turns parked one such copy each, and make_room's
-    // oldest-first eviction then pushed the parent conversation out after `slots` turns.  An entry without
-    // checkpoints, or whose deepest checkpoint the outgoing chain does not hold (another conversation that only
-    // shares the system prompt's root with it), is kept.  Returns how many were dropped.
+    // oldest-first eviction then pushed the parent conversation out after `slots` turns.  Also superseded: an older,
+    // shorter state of this conversation with at most a tenth of its tokens not in the outgoing ones (rewritten turns
+    // back, when the chain's spread checkpoints no longer hold one near its end).  An entry without checkpoints, or
+    // another conversation that only shares the system prompt's root with it, is kept.  Returns how many were dropped.
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
                            const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
-        auto held = [&](const ConversationCheckpoint& c) {
-            if (c.ids == ids && c.imgs == images) return true;
-            for (const auto& k : checkpoints)
-                if (k.ids == c.ids && k.imgs == c.imgs) return true;
-            return false;
-        };
         size_t dropped = 0;
         for (size_t i = 0; i < entries_.size();) {
             const auto& e = entries_[i];
-            const ConversationCheckpoint* deepest = nullptr;
-            for (const auto& c : e.checkpoints)
-                if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-            if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest) &&
+            if (superseded_at(e, ids, images, checkpoints, cvec) > 0 &&
                 !(guarded_ != 0 && serials_[i] == guarded_)) {
                 bytes_ -= e.bytes();
                 erase(i);
@@ -473,17 +488,7 @@ public:
     size_t parked_prefix_tokens(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
                                 const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) const {
         size_t longest = 0;
-        for (const auto& e : entries_) {
-            if (e.cvec != cvec) continue;
-            const ConversationCheckpoint* deepest = nullptr;
-            for (const auto& c : e.checkpoints)
-                if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-            if (!deepest || deepest->ids.empty()) continue;
-            bool holds = deepest->ids == ids && deepest->imgs == images;
-            for (const auto& k : checkpoints)
-                if (!holds && k.ids == deepest->ids && k.imgs == deepest->imgs) holds = true;
-            if (holds) longest = std::max(longest, deepest->ids.size());
-        }
+        for (const auto& e : entries_) longest = std::max(longest, superseded_at(e, ids, images, checkpoints, cvec));
         return longest;
     }
 
@@ -499,6 +504,22 @@ public:
     }
 
 private:
+    // How many of `e`'s tokens the outgoing conversation holds when it supersedes `e` (drop_superseded), else 0.
+    static size_t superseded_at(const SavedConversation& e, const std::vector<int32_t>& ids,
+                                const std::vector<ConversationImageKey>& images,
+                                const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
+        const ConversationCheckpoint* deepest = nullptr;
+        for (const auto& c : e.checkpoints)
+            if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+        if (e.cvec != cvec || !deepest || deepest->ids.empty()) return 0;
+        bool held = deepest->ids == ids && deepest->imgs == images;
+        for (const auto& k : checkpoints)
+            if (!held && k.ids == deepest->ids && k.imgs == deepest->imgs) held = true;
+        if (held) return deepest->ids.size();
+        const auto& own = e.live.ids;
+        const size_t shared = std::mismatch(own.begin(), own.end(), ids.begin(), ids.end()).first - own.begin();
+        return ids.size() > own.size() && own.size() - shared <= own.size() / 10 ? shared : 0;
+    }
     void erase(size_t index) {
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         serials_.erase(serials_.begin() + (std::ptrdiff_t) index);
@@ -509,6 +530,7 @@ private:
     std::deque<uint64_t> serials_;          // entries_[i]'s identity, never reused
     uint64_t next_serial_ = 1, guarded_ = 0;
     bool guard_blocked_ = false;
+    std::function<void(SavedConversation&&)> on_evict_;
     ConversationKvReuse reuse_;
 };
 
