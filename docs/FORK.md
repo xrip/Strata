@@ -4,8 +4,11 @@ This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with one patc
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
 
-Base: upstream 0.2.7.1 (`46c152a1`, merged 2026-10-28: DeepSeek on the Mac and the DGX Spark, nothing on this box's
-path, so the box still runs the 0.2.7 build). The fork's history before this base (the old patches, every sync and
+Base: upstream 0.2.8 (`870aedd9`, merged 2026-10-30; the box still runs the 0.2.7 build). On this box's path 0.2.8
+brings: `--expert-cache auto` leaves 256 MiB more VRAM free (#4474: ~170 fewer slots per card here, where the cards
+now end at 280-380 MiB free and the engine warns at every request; not measured yet), the engine and server wait for
+an exiting engine's memory (#4051), and the server's tool-call repairs (`tool_call_recovery` on by default).
+`STRATA_ROUTE_PRIOR` is off by default again (it never turned on by itself on these 20 GB cards). The fork's history before this base (the old patches, every sync and
 A/B since 2026-10-10) is the tag `fork-main-2026-10-28`.
 
 ## The patch: parked conversations on a disk
