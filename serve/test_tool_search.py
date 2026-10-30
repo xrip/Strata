@@ -26,7 +26,8 @@ SEARCH = {"name": "ToolSearch", "description": "Load deferred tools.",
           "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}}
 PLACEHOLDER = {"name": "DeferredToolPlaceholder", "input_schema": {"type": "object"}, "defer_loading": True}
 LOADED = {"name": MCP, "description": "Search the index.", "defer_loading": True,
-          "input_schema": {"type": "object", "properties": {"queries": {"type": "array", "items": {"type": "string"}}}}}
+          "input_schema": {"type": "object", "properties": {"queries": {"type": "array", "items": {"type": "string"}},
+                                                            "source": {"type": "string"}}}}
 CALL = f"<tool_call>\n<function={MCP}>\n<parameter=queries>\n[\"a\", \"b\"]\n</parameter>\n</function>\n</tool_call>"
 REFERENCE = [{"role": "user", "content": "find it"},
              {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "ToolSearch",
@@ -82,9 +83,10 @@ class Calls(unittest.TestCase):
         self.assertIn("<tool_call>", "".join(e.text for e in evs if e.kind == "content"))
 
     def test_a_loaded_deferred_tool_keeps_its_schema(self):
+        # without its schema a string that reads as a number would arrive as one, and the client refuses it
         tools, deferred = anthropic_tools({"tools": [SEARCH, LOADED]})
-        call = self.call(events(CALL.replace('["a", "b"]', '["a"]'), tools, deferred))[0]
-        self.assertEqual(call.arguments, {"queries": ["a"]})
+        call = self.call(events(CALL.replace("queries>\n[\"a\", \"b\"]", "source>\n42"), tools, deferred))[0]
+        self.assertEqual(call.arguments, {"source": "42"})
 
     def test_a_call_in_the_reasoning_is_rescued_too(self):
         calls = self.call(events("Searching.\n" + CALL, [{"name": "ToolSearch"}], deferred=True, thinking=True))
