@@ -7,8 +7,8 @@
 
 ## This fork: Strata on 2x CMP 50HX
 
-[xrip/Strata](https://github.com/xrip/Strata) is [Niko1221/Strata](https://github.com/Niko1221/Strata) with one patch
-(parked conversations on a disk) and the settings measured fastest on one box: 2x Xeon E5-2670 v2 (AVX only, 2 NUMA
+[xrip/Strata](https://github.com/xrip/Strata) is [Niko1221/Strata](https://github.com/Niko1221/Strata) with two patches
+(parked conversations on a disk; Anthropic's tool search for Claude Code) and the settings measured fastest on one box: 2x Xeon E5-2670 v2 (AVX only, 2 NUMA
 nodes), 80 GB DDR3-1866, 2x CMP 50HX (Turing sm_75, 20 GB) on a layer split over PCIe 2.0 x16, a third CMP 50HX
 (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS. The rest of this README is upstream's; the patch, the build
 and the syncs are in [docs/FORK.md](docs/FORK.md).

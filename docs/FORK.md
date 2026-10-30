@@ -1,10 +1,10 @@
 # xrip/Strata: upstream Strata for a box with 2x CMP 50HX
 
-This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with one patch, and the settings measured fastest on
+This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with two patches, and the settings measured fastest on
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
 
-Base: upstream 0.2.8 (`870aedd9`, merged 2026-10-30; the box still runs the 0.2.7 build). On this box's path 0.2.8
+Base: upstream 0.2.8 (`870aedd9`, merged 2026-10-30; live on the box since 2026-10-30). On this box's path 0.2.8
 brings: `--expert-cache auto` leaves 256 MiB more VRAM free (#4474: ~170 fewer slots per card here, where the cards
 now end at 280-380 MiB free and the engine warns at every request; not measured yet), the engine and server wait for
 an exiting engine's memory (#4051), and the server's tool-call repairs (`tool_call_recovery` on by default).
@@ -29,6 +29,20 @@ disk tier of its own (0.2.7 keeps parked conversations in RAM, opt-in in VRAM).
 Limits: not with upstream's opt-in `STRATA_PARK_ASYNC` / `STRATA_PARK_VRAM_MIB` (their images are filled after the
 park returns; the disk writer would copy them unfinished). A new engine version refuses the saved files once (their
 identity holds the version).
+
+## The second patch: Anthropic's tool search on /v1/messages (#4663)
+
+Claude Code (tool search is on by default behind a gateway) declares `ToolSearch` and a `defer_loading`
+`DeferredToolPlaceholder`, and names its MCP tools only in the conversation. Upstream ignored `defer_loading` and dropped
+`tool_reference` blocks, and returned a call for an undeclared name as text with `end_turn`: Qwen often calls a
+context-mode tool without loading it first, and the session stopped (8 such stops in civone-gbc sessions, 2026-10-29/30).
+Now, as on Anthropic's API: a deferred tool is callable but not in the prompt's tool list; a `tool_reference` puts its
+definition where it stands (the prompt's start stays the same, so the prompt cache too, where each loaded tool used to
+change it); any other reference is left out as before; with a deferred tool in the request, a call for an undeclared
+name is a `tool_use`. Checked against Claude Code 2.1.314 with a scripted fake API: it puts a loaded tool in `tools` with
+`defer_loading: true` and runs a direct call to a tool it holds back. Code: `serve/frontend.py` (`anthropic_tools`,
+`_tool_references`, `OutputParser(deferred=...)`), `serve/server.py` (the `/v1/messages` route), tests
+`serve/test_tool_search.py`. Other routes and clients keep upstream's rule.
 
 ## Settings for this box
 
