@@ -4,8 +4,10 @@ This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with two patc
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
 
-Base: upstream 0.2.8 (`870aedd9`, merged 2026-10-30; live on the box since 2026-10-30). On this box's path 0.2.8
-brings: `--expert-cache auto` leaves 256 MiB more VRAM free (#4474: ~170 fewer slots per card here, where the cards
+Base: upstream 0.2.9 (`c62d5e3a`, merged 2026-10-31; the box runs 0.2.8 until its next rebuild). On this box's path
+0.2.9 brings: the server sets `STRATA_GDN_CONVL2=2` (the prompt's conv, SiLU and q/k norm in one pass; not bitwise,
+KL 0.0019 on upstream's card) and `STRATA_GDN_TC=1` (needs sm_80, so it falls back here) on Linux CUDA, not measured
+here yet; calls shown in a code fence are not run (#4702, #4703). 0.2.8 (`870aedd9`, 2026-10-30) brought: `--expert-cache auto` leaves 256 MiB more VRAM free (#4474: ~170 fewer slots per card here, where the cards
 now end at 280-380 MiB free and the engine warns at every request; not measured yet), the engine and server wait for
 an exiting engine's memory (#4051), and the server's tool-call repairs (`tool_call_recovery` on by default).
 `STRATA_ROUTE_PRIOR` is off by default again (it never turned on by itself on these 20 GB cards). The fork's history before this base (the old patches, every sync and
@@ -42,7 +44,10 @@ change it); any other reference is left out as before; with a deferred tool in t
 name is a `tool_use`. Checked against Claude Code 2.1.314 with a scripted fake API: it puts a loaded tool in `tools` with
 `defer_loading: true` and runs a direct call to a tool it holds back. Code: `serve/frontend.py` (`anthropic_tools`,
 `_tool_references`, `OutputParser(deferred=...)`), `serve/server.py` (the `/v1/messages` route), tests
-`serve/test_tool_search.py`. Other routes and clients keep upstream's rule.
+`serve/test_tool_search.py`. Other routes and clients keep upstream's rule (0.2.9 adds its own fix there: on the OpenAI
+route a tool the conversation already called counts as declared). Upstream PR #4700. Live since 2026-10-30 14:39:
+about 1,700 answers in two Claude Code sessions in 4 hours, no stops; the model loaded each tool with `ToolSearch` first,
+so the direct call has not come up live yet.
 
 ## Settings for this box
 
