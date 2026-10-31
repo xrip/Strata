@@ -1308,10 +1308,12 @@ struct GdnTcNorm {
 cudaError_t gdn_rec_tc(float* state, const float* h, const float* gate, const float* beta, float* y, int64_t T,
                        cudaStream_t s, bool split = false, int np = 3, const GdnTcNorm* nm = nullptr, int tiles = 1) {
     if (T <= 0) return cudaSuccess;
+    bool one = false;   // sm_75: the one-buffer plan (kTcScanSmemOne), whatever plan was asked; no split variants there
     {
-        int dev = 0, major = 0, sms = 0, smem = 0;
+        int dev = 0, major = 0, minor = 0, sms = 0, smem = 0;
         if (cudaGetDevice(&dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&smem, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) != cudaSuccess) {
             cudaGetLastError();
@@ -1319,20 +1321,26 @@ cudaError_t gdn_rec_tc(float* state, const float* h, const float* gate, const fl
         }
         const GdnProbe* pr = gdn_probe_get();   // tests only: fewer SMs than value heads run the 48 blocks in several waves
         const bool any_sms = pr != nullptr && pr->any_sms;
-        if (strata::cc_major_of(major) < 8 || (!any_sms && sms < HV) ||
+        one = strata::cc_major_of(major) == 7 && strata::cc_minor_of(minor) >= 5;
+        if (one) {
+            if (split || (!any_sms && sms < HV) || (size_t) strata::smem_optin_of(smem) < kTcScanSmemOne)
+                return cudaErrorNotSupported;
+        } else if (strata::cc_major_of(major) < 8 || (!any_sms && sms < HV) ||
             (size_t) strata::smem_optin_of(smem) < (split ? (nm ? kTcScanSmemSplitNorm : kTcScanSmemSplit) : kTcScanSmem<false>))
             return cudaErrorNotSupported;
     }
     const GtcScratch sc = gdn_tc_scratch();
     if (sc.ti == nullptr) return cudaErrorMemoryAllocation;
     {   // once a device
-        static bool attrs[3][64] = {};
-        const int ai = nm && split ? 2 : (split ? 1 : 0);
+        static bool attrs[4][64] = {};
+        const int ai = one ? 3 : (nm && split ? 2 : (split ? 1 : 0));
         int dev = 0;
         cudaGetDevice(&dev);
         if (dev >= 0 && dev < 64 && !attrs[ai][dev]) {
             if (split) cudaFuncSetAttribute(gdn_tc_scan_kernel<false, true, 3, 2>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmemSplit);
-            if (ai == 2) {
+            if (ai == 3) {
+                cudaFuncSetAttribute(gdn_tc_scan_kernel<false, true, 3, 1, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmemOne);
+            } else if (ai == 2) {
                 cudaFuncSetAttribute(gdn_tc_scan_kernel<true, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmemSplitNorm);
                 cudaFuncSetAttribute(gdn_tc_scan_kernel<true, true, 2>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmemSplitNorm);
                 cudaFuncSetAttribute(gdn_tc_scan_kernel<true, true, 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmemSplitNorm);
@@ -1348,7 +1356,9 @@ cudaError_t gdn_rec_tc(float* state, const float* h, const float* gate, const fl
     for (int64_t t0 = 0; t0 < T; t0 += GSB) {
         const int nch = (int) ((std::min<int64_t>(GSB, T - t0) + GCH - 1) / GCH);
         gdn_tc_prep_kernel<<<dim3((unsigned) nch, HK), 256, kTcPrepSmem, s>>>(h, gate, beta, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, t0, T);
-        if (tiles == 2 && split && !nm && np == 3) {
+        if (one) {
+            gdn_tc_scan_kernel<false, true, 3, 1, true><<<HV, GTC_CW * 32, kTcScanSmemOne, s>>>(state, h, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, y, t0, nch, T);
+        } else if (tiles == 2 && split && !nm && np == 3) {
             gdn_tc_scan_kernel<false, true, 3, 2><<<HV * 2, GTC_CW * 16, kTcScanSmemSplit, s>>>(state, h, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, y, t0, nch, T);
         } else if (nm && split) {
 #define STRATA_TCN(NPV) gdn_tc_scan_kernel<true, true, NPV><<<HV, GTC_CW * 32, kTcScanSmemSplitNorm, s>>>(state, h, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, y, t0, nch, T, nm->z, nm->gamma, nm->eps, nm->y16, nm->ld16)
