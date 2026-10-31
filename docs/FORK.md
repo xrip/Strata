@@ -6,8 +6,9 @@ a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures,
 
 Base: upstream 0.2.9 (`c62d5e3a`, merged 2026-10-31; the box runs 0.2.8 until its next rebuild). On this box's path
 0.2.9 brings: the server sets `STRATA_GDN_CONVL2=2` (the prompt's conv, SiLU and q/k norm in one pass; not bitwise,
-KL 0.0019 on upstream's card) and `STRATA_GDN_TC=1` (needs sm_80, so it falls back here) on Linux CUDA, not measured
-here yet; calls shown in a code fence are not run (#4702, #4703). 0.2.8 (`870aedd9`, 2026-10-30) brought: `--expert-cache auto` leaves 256 MiB more VRAM free (#4474: ~170 fewer slots per card here, where the cards
+KL 0.0019 on upstream's card) and `STRATA_GDN_TC=1` (needs sm_80, so it falls back here) on Linux CUDA. Measured with
+`gdn_harness` on the x1 CMP 50HX: one layer's conv 1.82 -> 1.39 ms at an 8,192-token chunk (the conv is ~1 % of a
+prompt read here, so ~0.3 %); the recurrence (`pipe`, the only sm_75 kernel) is 11.1 ms a layer, ~7 % of a read; calls shown in a code fence are not run (#4702, #4703). 0.2.8 (`870aedd9`, 2026-10-30) brought: `--expert-cache auto` leaves 256 MiB more VRAM free (#4474: ~170 fewer slots per card here, where the cards
 now end at 280-380 MiB free and the engine warns at every request; not measured yet), the engine and server wait for
 an exiting engine's memory (#4051), and the server's tool-call repairs (`tool_call_recovery` on by default).
 `STRATA_ROUTE_PRIOR` is off by default again (it never turned on by itself on these 20 GB cards). The fork's history before this base (the old patches, every sync and
