@@ -1306,9 +1306,12 @@ struct GdnTcNorm {
     int64_t ld16;
 };
 cudaError_t gdn_rec_tc(float* state, const float* h, const float* gate, const float* beta, float* y, int64_t T,
-                       cudaStream_t s, bool split = false, int np = 3, const GdnTcNorm* nm = nullptr, int tiles = 1) {
+                       cudaStream_t s, bool split = false, int np = 3, const GdnTcNorm* nm = nullptr, int tiles = 1,
+                       bool turing = true) {
     if (T <= 0) return cudaSuccess;
-    bool one = false;   // sm_75: the one-buffer plan (kTcScanSmemOne), whatever plan was asked; no split variants there
+    // sm_75: the one-buffer plan (kTcScanSmemOne); the split variants are not supported there.  turing = false (the
+    // dispatch with STRATA_GDN_TC=1) leaves sm_75 on the kernels it had
+    bool one = false;
     {
         int dev = 0, major = 0, minor = 0, sms = 0, smem = 0;
         if (cudaGetDevice(&dev) != cudaSuccess ||
@@ -1323,7 +1326,7 @@ cudaError_t gdn_rec_tc(float* state, const float* h, const float* gate, const fl
         const bool any_sms = pr != nullptr && pr->any_sms;
         one = strata::cc_major_of(major) == 7 && strata::cc_minor_of(minor) >= 5;
         if (one) {
-            if (split || (!any_sms && sms < HV) || (size_t) strata::smem_optin_of(smem) < kTcScanSmemOne)
+            if (!turing || split || (!any_sms && sms < HV) || (size_t) strata::smem_optin_of(smem) < kTcScanSmemOne)
                 return cudaErrorNotSupported;
         } else if (strata::cc_major_of(major) < 8 || (!any_sms && sms < HV) ||
             (size_t) strata::smem_optin_of(smem) < (split ? (nm ? kTcScanSmemSplitNorm : kTcScanSmemSplit) : kTcScanSmem<false>))
@@ -2995,8 +2998,10 @@ static void gdn_recurrence_impl(int variant, float* state, const float* h, const
         static const bool chunked = [] { const char* v = std::getenv("STRATA_GDN_CHUNKED"); return v != nullptr && std::atoi(v) != 0; }();
         // STRATA_GDN_TC=1 (opt-in): the chunked recurrence with the scan on the tensor cores (gdn_tc.cuh) for prompt
         // chunks of kGdnTcMin+ tokens: within 1e-4 of the kernels below (gdn_rec_parity), 3.75x gdn_rec_kh_kernel on a
-        // CMP 170HX; a shorter chunk, a card it does not fit or a failed scratch allocation takes the kernels below
-        static const bool tc = [] { const char* v = std::getenv("STRATA_GDN_TC"); return v != nullptr && std::atoi(v) != 0; }();
+        // CMP 170HX; a shorter chunk, a card it does not fit or a failed scratch allocation takes the kernels below.
+        // STRATA_GDN_TC=2 runs it on sm_75 too (the one-buffer plan; not qualified there, so =1 leaves sm_75 as it was)
+        static const int tc_mode = [] { const char* v = std::getenv("STRATA_GDN_TC"); return v != nullptr ? std::atoi(v) : 0; }();
+        static const bool tc = tc_mode != 0;
         // A test's probe (gdn_probe.hpp) reads back the path that ran and may force one; without a probe this is the
         // dispatch it was.  A forced path that cannot run launches nothing (selected = none, reason says why).
         GdnProbe* pr = gdn_probe_get();
@@ -3036,7 +3041,7 @@ static void gdn_recurrence_impl(int variant, float* state, const float* h, const
         } else {
             if (tc && T >= kGdnTcMin) {
                 wanted = kGdnTc;
-                cudaError_t e = gdn_rec_tc(state, h, gate, beta, y, T, cs);
+                cudaError_t e = gdn_rec_tc(state, h, gate, beta, y, T, cs, false, 3, nullptr, 1, tc_mode >= 2);
                 if (e == cudaSuccess) sel = kGdnTc;
                 else {   // the 99-KB cards (sm_86 / 89 / 120): the single-buffered v / T / P plan
                     if (pr) why = gdn_chunk_why(true, e, false);

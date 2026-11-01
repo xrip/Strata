@@ -1,14 +1,14 @@
 # xrip/Strata: upstream Strata for a box with 2x CMP 50HX
 
-This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with two patches, and the settings measured fastest on
+This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with three patches, and the settings measured fastest on
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
 
-Base: upstream 0.2.9 (`c62d5e3a`, merged 2026-10-31; the box runs 0.2.8 until its next rebuild). On this box's path
+Base: upstream 0.2.9 (`c62d5e3a`, merged 2026-10-31, on the box since that day). On this box's path
 0.2.9 brings: the server sets `STRATA_GDN_CONVL2=2` (the prompt's conv, SiLU and q/k norm in one pass; not bitwise,
-KL 0.0019 on upstream's card) and `STRATA_GDN_TC=1` (needs sm_80, so it falls back here) on Linux CUDA. Measured with
-`gdn_harness` on the x1 CMP 50HX: one layer's conv 1.82 -> 1.39 ms at an 8,192-token chunk (the conv is ~1 % of a
-prompt read here, so ~0.3 %); the recurrence (`pipe`, the only sm_75 kernel) is 11.1 ms a layer, ~7 % of a read; calls shown in a code fence are not run (#4702, #4703). 0.2.8 (`870aedd9`, 2026-10-30) brought: `--expert-cache auto` leaves 256 MiB more VRAM free (#4474: ~170 fewer slots per card here, where the cards
+KL 0.0019 on upstream's card) and `STRATA_GDN_TC=1` (needs sm_80; the third patch below runs it here with `=2`) on
+Linux CUDA. Measured with `gdn_harness` on the x1 CMP 50HX: one layer's conv 1.82 -> 1.39 ms at an 8,192-token chunk
+(the conv is ~1 % of a prompt read here, so ~0.3 %); the recurrence (`pipe`) is 11.1 ms a layer, ~7 % of a read; calls shown in a code fence are not run (#4702, #4703). 0.2.8 (`870aedd9`, 2026-10-30) brought: `--expert-cache auto` leaves 256 MiB more VRAM free (#4474: ~170 fewer slots per card here, where the cards
 now end at 280-380 MiB free and the engine warns at every request; not measured yet), the engine and server wait for
 an exiting engine's memory (#4051), and the server's tool-call repairs (`tool_call_recovery` on by default).
 `STRATA_ROUTE_PRIOR` is off by default again (it never turned on by itself on these 20 GB cards). The fork's history before this base (the old patches, every sync and
@@ -49,6 +49,17 @@ name is a `tool_use`. Checked against Claude Code 2.1.314 with a scripted fake A
 route a tool the conversation already called counts as declared). Upstream PR #4700. Live since 2026-10-30 14:39:
 about 1,700 answers in two Claude Code sessions in 4 hours, no stops; the model loaded each tool with `ToolSearch` first,
 so the direct call has not come up live yet.
+
+## The third patch: the tensor-core GDN recurrence on sm_75 (#4876)
+
+`STRATA_GDN_TC=2` runs upstream's tensor-core scan of the prompt's DeltaNet recurrence on Turing too (`=1` leaves sm_75
+on the old `pipe` kernel). Upstream's scan needs sm_80 and 98-125 KB of shared memory a block; here each m16n8k16
+product is two m16n8k8 steps, `cp.async` is a plain copy, and every buffer is single (62,480 B of the 64 KB opt-in), so
+the next chunk's load does not overlap the products. Not bitwise: the same rounding as upstream's `=1` (f16x3 split
+products; `gdn_harness` against its FP64 reference PASS, 10 stress cases). One layer's recurrence on the x1 CMP 50HX:
+11.19 -> 5.12 ms at 8,192 tokens, 2.77 -> 1.28 at 2,048, 0.39 -> 0.21 at 300. Live since 2026-10-31: prompt reads of
+4-46K new tokens after a cached 10K start 6.0 % +- 5.6 % faster than on 0.2.8 (6 reads against 28; 0.2.9 and this
+together). Code: `src/prefill/gdn_tc.cuh` (`ONE`), `gdn_rec_tc` in `src/prefill/kernels.cu`. Upstream PR #4876.
 
 ## Settings for this box
 
