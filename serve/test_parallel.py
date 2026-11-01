@@ -861,7 +861,7 @@ class GdnStackDefaults(unittest.TestCase):
     def test_cuda_on(self):
         for cfg in ({"backend": "cuda"}, {}, {"arch": "qwen4exp"}):
             env = self.env_for(cfg)
-            self.assertEqual(env.get("STRATA_GDN_TC"), "1")
+            self.assertEqual(env.get("STRATA_GDN_TC"), "2")   # xrip fork: 2 also runs it on sm_75 (docs/FORK.md)
             self.assertEqual(env.get("STRATA_GDN_CONVL2"), "2")
             self.assertNotIn("STRATA_GDN_CHUNKED", env)
 
@@ -895,7 +895,7 @@ class GdnStackDefaults(unittest.TestCase):
         from unittest import mock
         with mock.patch.object(server, "parallel_stack_platform", return_value=True):
             env = server.child_env({"args": []})
-        self.assertEqual(env.get("STRATA_GDN_TC"), "1")
+        self.assertEqual(env.get("STRATA_GDN_TC"), "2")
 
 if __name__ == "__main__":
     unittest.main()

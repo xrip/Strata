@@ -60,6 +60,9 @@ products; `gdn_harness` against its FP64 reference PASS, 10 stress cases). One l
 11.19 -> 5.12 ms at 8,192 tokens, 2.77 -> 1.28 at 2,048, 0.39 -> 0.21 at 300. Live since 2026-10-31: prompt reads of
 4-46K new tokens after a cached 10K start 6.0 % +- 5.6 % faster than on 0.2.8 (6 reads against 28; 0.2.9 and this
 together). Code: `src/prefill/gdn_tc.cuh` (`ONE`), `gdn_rec_tc` in `src/prefill/kernels.cu`. Upstream PR #4876.
+On by default here: the fork's server sets `STRATA_GDN_TC=2` where upstream's sets `=1` (`GDN_STACK_CUDA` in
+`serve/server.py`, checked by `serve/test_parallel.py`), and the box's configs set it too. The engine says nothing
+when it falls back to the old kernel, so check it after every sync (below).
 
 ## Settings for this box
 
@@ -98,5 +101,9 @@ tested. Tools on the box: `~/opt-avx1/quick.sh` (this table), `perf.sh` (the idl
 
 `git fetch upstream && git merge upstream/main` on `main`; the patch lives in `conversation_disk.*`, a few blocks of
 `generate.cpp` (marked `--conversation-disk-dir`), `conversation_cache.hpp` (`set_on_evict`, `shared_tokens`, the 90 %
-rule) and the server's cache card. Skip the speed test when nothing on this box's path changed (DeepSeek, AVX2/AVX-512
-kernels, one-GPU features); otherwise `quick.sh` against the deployed build.
+rule) and the server's cache card. The third patch: `gdn_tc.cuh`, `gdn_rec_tc` and `GDN_STACK_CUDA` (keep `"2"` when
+upstream changes that line). After every sync, on the x1 card: `CUDA_VISIBLE_DEVICES=2 STRATA_GDN_TC=2 gdn_harness
+--T 5000 --chunk 2500 --cuts 37 --paths auto,pipe --ref-heads 0,17,47` must show `tc->tc` and PASS on the `auto` line
+(`tc->pipe` means the sm_75 scan is off), and `python -m pytest serve/test_parallel.py -k GdnStack` must pass. Skip the
+speed test when nothing on this box's path changed (DeepSeek, AVX2/AVX-512 kernels, one-GPU features); otherwise
+`quick.sh` against the deployed build.

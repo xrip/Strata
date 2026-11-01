@@ -3731,7 +3731,8 @@ def parallel_stack_env(env: dict, cfg: dict) -> None:
 #         +3.5% at 4K, +5.5% at 16K (R9700).  The same variable also turns the gfx11 path on in the engine and only gfx12 was
 #         qualified, so it is set only when every card the engine will see is gfx12.
 # Other engines (Qwen3.6, DeepSeek), SYCL, Metal, Vulkan, Windows: nothing.  An explicit variable (or the config's env) wins.
-GDN_STACK_CUDA = {"STRATA_GDN_TC": "1", "STRATA_GDN_CONVL2": "2"}
+# xrip fork: STRATA_GDN_TC=2, which also runs the scan on sm_75 (docs/FORK.md, the third patch); on sm_80+ it is =1.
+GDN_STACK_CUDA = {"STRATA_GDN_TC": "2", "STRATA_GDN_CONVL2": "2"}
 GDN_STACK_GFX12 = {"STRATA_GDN_CHUNKED": "1"}
 
 
