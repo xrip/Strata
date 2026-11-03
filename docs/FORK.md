@@ -1,7 +1,7 @@
 # xrip/Strata: upstream Strata for a box with 2x CMP 50HX
 
 This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with three patches (the disk tier, the third one, the
-GDN scan on sm_75, and the fourth, the decode activation copy in planes; the second, tool search, is upstream's since
+GDN scan on sm_75, and the fourth, 5-8 row decode windows on the interleaved kernels; the second, tool search, is upstream's since
 0.2.10), and the settings measured fastest on
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
@@ -76,20 +76,26 @@ On by default here: the fork's server sets `STRATA_GDN_TC=2` where upstream's se
 `serve/server.py`, checked by `serve/test_parallel.py`), and the box's configs set it too. The engine says nothing
 when it falls back to the old kernel, so check it after every sync (below).
 
-## The fourth patch: the 5-8 column activation copy in planes (decode, bitwise)
+## The fourth patch: 5-8 row windows on the interleaved kernels (decode, bitwise; upstream PR #5137)
 
-A verify window of 5-8 rows reads its dense projections through `native_mmvq_il`, whose activation copy then has 32-byte
-entries (8 columns of an int). The IQ4_XS kernel reads the position-major copy with its lanes on consecutive blocks, so
-each 16-byte load touched every other 16 bytes: ncu on the CMP 50HX, 5 against 4 columns, the same DRAM bytes but 17.2
-against 9.5 sectors a load request and `lg_throttle` 5.8 against 0.7 warps an issue (40 -> 70 us). The position-major
-copy of 5-8 columns is now two 4-column planes (columns 0-3, then 4-7); the block-major copy and the scales, which the
-K-quant kernels read, keep their layout. `mmvq_il_parity` (every case, T 1-8, rows 1/2/4 and the table, and every
-`--pf` variant): bitwise. Same binaries alternated, medians of 3 on GPU 0: IQ4_XS -18..-24 % at 5 columns and
--15..-23 % at 6 (2560x6144 39.4 -> 31.6 us, 6144x2560 38.0 -> 29.0, 2560x10240 60.6 -> 49.7), Q4_K / Q5_K / Q6_K
-within +-2 %. IQ4_XS is ~0.9 ms of a ~29 ms window here and only 5+ row windows gain, so decode ~+0.3 % (below a decode
-A/B's noise). Code: `Q81Il` in `src/kernels/cuda/q8_1_il.cuh`, `il_pm_at` in `src/kernels/cuda/native_mmvq.cu`.
-Tried with it and dropped: the same planes for the block-major copy (Q6_K 6144x2560 5 columns 52 -> 74 us) and Q6_K
-5 columns as 6 (`STRATA_IL_PAD`-style, 11-62 % slower).
+Two parts, as in the PR. `kIlRows58_75`: on Turing the interleaved path (`STRATA_SM75_PERF=1` here) had rows for 2-4
+columns only, so 5-8 row windows ran `native_mmvq`'s plain kernels, 1.5-2.4x the interleaved ones at those widths (IQ4_XS
+2560x10240 at 5 columns 113 against 49 us); the table was read off `mmvq_il_parity --bench --emit-table` three times on
+GPU 0 (they agreed except one cell, set to 0). And in sm_75 code the position-major activation copy of 5-8 columns is
+two 4-column planes: IQ4_XS read it with each 16-byte load touching every other 16 bytes (ncu: 17.2 against 9.5 sectors
+a request, `lg_throttle` 5.8 against 0.7, 40 -> 70 us from 4 to 5 columns); now IQ4_XS -16..-22 % at 5-6 columns, the
+K-quants unchanged (their block-major copy and the scales keep their layout). `mmvq_il_parity` (every case, T 1-8, rows
+1/2/4, the table, every `--pf` variant): bitwise. Other architectures compile the old instructions (SASS compared).
+
+End to end here: nothing measurable. A first version (fork `6d3d4853`) had the planes without the table, so the engine
+never ran them on this card; its "~+0.3 %" was wrong. With both parts, arms alternated 3 x (8K, `--spec 4`, 6 x 512
+tokens): planes only 29.05, both 29.17, the table only 29.33 ms per window, within noise. nsys: the 5-8 column
+projections are ~0.6 ms of a ~29 ms window (0.6 s of GPU time at 6 columns, no 5-column launch, against 3.9 s
+at 4 columns). `--batch 2` on the layer split runs pipelined groups of one row, so it has no 5-8 column windows
+either. Kept because it is bitwise
+and faster per launch; it matters where windows are wider. Code: `Q81Il` (`PLANES`) in `src/kernels/cuda/q8_1_il.cuh`,
+`il_pm_at` and `kIlRows58_75` in `src/kernels/cuda/native_mmvq.cu`. Tried and dropped: planes for the block-major copy
+(Q6_K 6144x2560 5 columns 52 -> 74 us), Q6_K 5 columns as 6 (11-62 % slower).
 
 ## Settings for this box
 

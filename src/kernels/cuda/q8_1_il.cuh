@@ -13,18 +13,30 @@
 namespace strata::kernels {
 namespace {
 
+// The position-major copy of 5..8 columns as two 4-column planes (native_mmvq.hpp): in sm_75 code only, where it was
+// measured; every other architecture keeps the 32-byte entries.  The writer (il_pm_at, native_mmvq.cu) and the readers
+// below run on the same device from the same build, so they always agree.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 750
+constexpr bool kQ81IlPmPlanes = true;
+#else
+constexpr bool kQ81IlPmPlanes = false;
+#endif
+
 // NC columns of the block-major (PM false) or position-major copy: u(b, p, o) = int p of q8_1 block b of every column,
-// scales(b, o) = their scales.  CS = an entry's ints: CP, except the position-major copy of 5..8 columns, two planes of
-// 4-wide entries whose second (columns 4-7) starts nb * 32 ints after the first (native_mmvq.hpp); QH = where an entry's
-// columns 4-7 are, in ints from its columns 0-3.
+// scales(b, o) = their scales.  CS = an entry's ints: CP, or 4 for the planes, whose second (columns 4-7) starts
+// nb * 32 ints after the first; qh() = where an entry's columns 4-7 are, in ints from its columns 0-3.
 template <int NC, bool PM> struct Q81Il {
     static constexpr int CP = native_q8_1_il_cp(NC);
-    static constexpr bool PLANES = PM && CP == 8;
+    static constexpr bool PLANES = PM && CP == 8 && kQ81IlPmPlanes;
     static constexpr int CS = PLANES ? 4 : CP;
     const int* __restrict__ q;
     const float* __restrict__ d;
     int nb;   // blocks a column
-    __device__ __forceinline__ std::size_t qh() const { return PLANES ? std::size_t(nb) * 32 : 4; }
+    // (an int 4 without the planes, as the code before them, so other architectures compile the same instructions)
+    __device__ __forceinline__ auto qh() const {
+        if constexpr (PLANES) return std::size_t(nb) * 32;
+        else return 4;
+    }
     __device__ __forceinline__ void u(int b, int p, int (&o)[NC]) const {
         const int* s = q + std::size_t(PM ? p * nb + b : b * 8 + p) * CS;
         if constexpr (CP == 2) {

@@ -8,7 +8,7 @@
 ## This fork: Strata on 2x CMP 50HX
 
 [xrip/Strata](https://github.com/xrip/Strata) is [Niko1221/Strata](https://github.com/Niko1221/Strata) with three patches
-(parked conversations on a disk; the tensor-core GDN scan on sm_75; the 5-8 column decode activation copy in planes - the tool search patch is upstream's since 0.2.10) and the settings measured fastest on one box: 2x Xeon E5-2670 v2 (AVX only, 2 NUMA
+(parked conversations on a disk; the tensor-core GDN scan on sm_75; 5-8 row decode windows on the interleaved kernels (#5137) - the tool search patch is upstream's since 0.2.10) and the settings measured fastest on one box: 2x Xeon E5-2670 v2 (AVX only, 2 NUMA
 nodes), 80 GB DDR3-1866, 2x CMP 50HX (Turing sm_75, 20 GB) on a layer split over PCIe 2.0 x16, a third CMP 50HX
 (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS. The rest of this README is upstream's; the patch, the build
 and the syncs are in [docs/FORK.md](docs/FORK.md).
