@@ -14,14 +14,19 @@ namespace strata::kernels {
 namespace {
 
 // NC columns of the block-major (PM false) or position-major copy: u(b, p, o) = int p of q8_1 block b of every column,
-// scales(b, o) = their scales
+// scales(b, o) = their scales.  CS = an entry's ints: CP, except the position-major copy of 5..8 columns, two planes of
+// 4-wide entries whose second (columns 4-7) starts nb * 32 ints after the first (native_mmvq.hpp); QH = where an entry's
+// columns 4-7 are, in ints from its columns 0-3.
 template <int NC, bool PM> struct Q81Il {
     static constexpr int CP = native_q8_1_il_cp(NC);
+    static constexpr bool PLANES = PM && CP == 8;
+    static constexpr int CS = PLANES ? 4 : CP;
     const int* __restrict__ q;
     const float* __restrict__ d;
     int nb;   // blocks a column
+    __device__ __forceinline__ std::size_t qh() const { return PLANES ? std::size_t(nb) * 32 : 4; }
     __device__ __forceinline__ void u(int b, int p, int (&o)[NC]) const {
-        const int* s = q + std::size_t(PM ? p * nb + b : b * 8 + p) * CP;
+        const int* s = q + std::size_t(PM ? p * nb + b : b * 8 + p) * CS;
         if constexpr (CP == 2) {
             const int2 a = *reinterpret_cast<const int2*>(s);
             o[0] = a.x;
@@ -33,7 +38,7 @@ template <int NC, bool PM> struct Q81Il {
             if constexpr (NC > 2) o[2] = a.z;
             if constexpr (NC > 3) o[3] = a.w;
             if constexpr (NC > 4) {
-                const int4 e = *reinterpret_cast<const int4*>(s + 4);
+                const int4 e = *reinterpret_cast<const int4*>(s + qh());
                 o[4] = e.x;
                 if constexpr (NC > 5) o[5] = e.y;
                 if constexpr (NC > 6) o[6] = e.z;
@@ -43,9 +48,9 @@ template <int NC, bool PM> struct Q81Il {
     }
     // P1 (native_mmvq_il_pf_kernel): the same loads from a pointer the caller strength-reduces - qat(qbase(b, p) + k * QB)
     // is u(b + k, p), dat(dbase(b) + k * DB) is scales(b + k)
-    static constexpr int QB = PM ? CP : 8 * CP, DB = CP;
-    __device__ __forceinline__ int qp(int dp) const { return PM ? dp * nb * CP : dp * CP; }   // ints from p to p + dp
-    __device__ __forceinline__ const int* qbase(int b, int p) const { return q + std::size_t(PM ? p * nb + b : b * 8 + p) * CP; }
+    static constexpr int QB = PM ? CS : 8 * CS, DB = CP;
+    __device__ __forceinline__ int qp(int dp) const { return PM ? dp * nb * CS : dp * CS; }   // ints from p to p + dp
+    __device__ __forceinline__ const int* qbase(int b, int p) const { return q + std::size_t(PM ? p * nb + b : b * 8 + p) * CS; }
     __device__ __forceinline__ const float* dbase(int b) const { return d + std::size_t(b) * CP; }
     __device__ __forceinline__ void qat(const int* s, int (&o)[NC]) const {   // __ldg: s comes from an asm (madw), so the
         if constexpr (CP == 2) {                                                // front end no longer knows it is global
@@ -59,7 +64,7 @@ template <int NC, bool PM> struct Q81Il {
             if constexpr (NC > 2) o[2] = a.z;
             if constexpr (NC > 3) o[3] = a.w;
             if constexpr (NC > 4) {
-                const int4 e = __ldg(reinterpret_cast<const int4*>(s + 4));
+                const int4 e = __ldg(reinterpret_cast<const int4*>(s + qh()));
                 o[4] = e.x;
                 if constexpr (NC > 5) o[5] = e.y;
                 if constexpr (NC > 6) o[6] = e.z;

@@ -1,7 +1,8 @@
 # xrip/Strata: upstream Strata for a box with 2x CMP 50HX
 
-This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with two patches (the disk tier and the third one, the
-GDN scan on sm_75; the second, tool search, is upstream's since 0.2.10), and the settings measured fastest on
+This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with three patches (the disk tier, the third one, the
+GDN scan on sm_75, and the fourth, the decode activation copy in planes; the second, tool search, is upstream's since
+0.2.10), and the settings measured fastest on
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
 
@@ -75,6 +76,21 @@ On by default here: the fork's server sets `STRATA_GDN_TC=2` where upstream's se
 `serve/server.py`, checked by `serve/test_parallel.py`), and the box's configs set it too. The engine says nothing
 when it falls back to the old kernel, so check it after every sync (below).
 
+## The fourth patch: the 5-8 column activation copy in planes (decode, bitwise)
+
+A verify window of 5-8 rows reads its dense projections through `native_mmvq_il`, whose activation copy then has 32-byte
+entries (8 columns of an int). The IQ4_XS kernel reads the position-major copy with its lanes on consecutive blocks, so
+each 16-byte load touched every other 16 bytes: ncu on the CMP 50HX, 5 against 4 columns, the same DRAM bytes but 17.2
+against 9.5 sectors a load request and `lg_throttle` 5.8 against 0.7 warps an issue (40 -> 70 us). The position-major
+copy of 5-8 columns is now two 4-column planes (columns 0-3, then 4-7); the block-major copy and the scales, which the
+K-quant kernels read, keep their layout. `mmvq_il_parity` (every case, T 1-8, rows 1/2/4 and the table, and every
+`--pf` variant): bitwise. Same binaries alternated, medians of 3 on GPU 0: IQ4_XS -18..-24 % at 5 columns and
+-15..-23 % at 6 (2560x6144 39.4 -> 31.6 us, 6144x2560 38.0 -> 29.0, 2560x10240 60.6 -> 49.7), Q4_K / Q5_K / Q6_K
+within +-2 %. IQ4_XS is ~0.9 ms of a ~29 ms window here and only 5+ row windows gain, so decode ~+0.3 % (below a decode
+A/B's noise). Code: `Q81Il` in `src/kernels/cuda/q8_1_il.cuh`, `il_pm_at` in `src/kernels/cuda/native_mmvq.cu`.
+Tried with it and dropped: the same planes for the block-major copy (Q6_K 6144x2560 5 columns 52 -> 74 us) and Q6_K
+5 columns as 6 (`STRATA_IL_PAD`-style, 11-62 % slower).
+
 ## Settings for this box
 
 Build: `-DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_ISA_FLOOR=avx` (the released engines need AVX2:
@@ -124,7 +140,8 @@ tested. Tools on the box: `~/opt-avx1/quick.sh` (this table), `perf.sh` (the idl
 
 `git fetch upstream && git merge upstream/main` on `main`; the patch lives in `conversation_disk.*`, a few blocks of
 `generate.cpp` (marked `--conversation-disk-dir`), `conversation_cache.hpp` (`set_on_evict`, `shared_tokens`, the 90 %
-rule) and the server's cache card. The third patch: `gdn_tc.cuh`, `gdn_rec_tc` and `GDN_STACK_CUDA` (keep `"2"` when
+rule) and the server's cache card. The fourth: `Q81Il` (`PLANES`) and `il_pm_at` (re-run `mmvq_il_parity` after a
+sync that touches `native_mmvq.cu`). The third patch: `gdn_tc.cuh`, `gdn_rec_tc` and `GDN_STACK_CUDA` (keep `"2"` when
 upstream changes that line). After every sync, on the x1 card: `CUDA_VISIBLE_DEVICES=2 STRATA_GDN_TC=2 gdn_harness
 --T 5000 --chunk 2500 --cuts 37 --paths auto,pipe --ref-heads 0,17,47` must show `tc->tc` and PASS on the `auto` line
 (`tc->pipe` means the sm_75 scan is off), and `python -m pytest serve/test_parallel.py -k GdnStack` must pass. Skip the
