@@ -4,8 +4,16 @@ This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with three pa
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
 
-Base: upstream 0.2.9 (`c62d5e3a`, merged 2026-10-31, on the box since that day). On this box's path
-0.2.9 brings: the server sets `STRATA_GDN_CONVL2=2` (the prompt's conv, SiLU and q/k norm in one pass; not bitwise,
+Base: upstream 0.2.10 (`ffa80d73`, engine 0.1.56, merged 2026-11-03, built in `~/strata-next`, not deployed yet).
+On this box's path 0.2.10 brings: `STRATA_QSA_FUSE_NR` on by default (the QSA layers' norm + rope in one pass; its
+no-fold guard is HIP-only, so it was checked here: `qsa_nr_parity` built for sm_75 by hand, 44 of 44 cases bit for
+bit on the x1 CMP 50HX, 2.25 -> 1.79 ms a QSA layer at 8,191 tokens, ~0.1 % of a read); a layer split reads prompts
+chunk-major by default (the config's `STRATA_PREFILL_LAYER_MAJOR=0` is now the default); the tool search code of
+#4663 / PR #4700 is upstream's now. Not used here: the all-cards split engine (sFNX; sm_86 / gfx1201, UD-Q4 models
+that fit the cards), `STRATA_QSA_FUSE_GATE` and `STRATA_PA_TRIM` (HIP kernel only). New opt-ins not measured yet:
+`STRATA_PF_GROUP_SCRATCH`, `STRATA_PF_HC_REGION` (bitwise; smaller prompt buffers, the prompt path now borrows
+4.38 GiB a card here), `STRATA_PREFILL_ROUTED_STREAM`. Base before: upstream 0.2.9 (`c62d5e3a`, 2026-10-31);
+0.2.9 brought: the server sets `STRATA_GDN_CONVL2=2` (the prompt's conv, SiLU and q/k norm in one pass; not bitwise,
 KL 0.0019 on upstream's card) and `STRATA_GDN_TC=1` (needs sm_80; the third patch below runs it here with `=2`) on
 Linux CUDA. Measured with `gdn_harness` on the x1 CMP 50HX: one layer's conv 1.82 -> 1.39 ms at an 8,192-token chunk
 (the conv is ~1 % of a prompt read here, so ~0.3 %); the recurrence (`pipe`) is 11.1 ms a layer, ~7 % of a read; calls shown in a code fence are not run (#4702, #4703). 0.2.8 (`870aedd9`, 2026-10-30) brought: `--expert-cache auto` leaves 256 MiB more VRAM free (#4474: ~170 fewer slots per card here, where the cards
