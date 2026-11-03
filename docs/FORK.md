@@ -1,6 +1,7 @@
 # xrip/Strata: upstream Strata for a box with 2x CMP 50HX
 
-This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with three patches, and the settings measured fastest on
+This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with two patches (the disk tier and the third one, the
+GDN scan on sm_75; the second, tool search, is upstream's since 0.2.10), and the settings measured fastest on
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
 
@@ -41,9 +42,11 @@ Limits: not with upstream's opt-in `STRATA_PARK_ASYNC` / `STRATA_PARK_VRAM_MIB` 
 park returns; the disk writer would copy them unfinished). A new engine version refuses the saved files once (their
 identity holds the version).
 
-## The second patch: Anthropic's tool search on /v1/messages (#4663)
+## Was the second patch: Anthropic's tool search on /v1/messages (#4663), upstream's since 0.2.10
 
-Claude Code (tool search is on by default behind a gateway) declares `ToolSearch` and a `defer_loading`
+Upstream 0.2.10 took this commit as it was (`9efac55f`) and added its own follow-up (`6a8752f9`: on the Anthropic and
+Responses routes too, a tool the conversation already called counts as declared), so the fork carries no code for it now.
+What it does: Claude Code (tool search is on by default behind a gateway) declares `ToolSearch` and a `defer_loading`
 `DeferredToolPlaceholder`, and names its MCP tools only in the conversation. Upstream ignored `defer_loading` and dropped
 `tool_reference` blocks, and returned a call for an undeclared name as text with `end_turn`: Qwen often calls a
 context-mode tool without loading it first, and the session stopped (8 such stops in civone-gbc sessions, 2026-10-29/30).
@@ -78,8 +81,8 @@ Build: `-DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_ISA_FLOOR
 on this CPU they stop at start). The config and what each setting gives here: the top of [README.md](../README.md).
 More on some of them:
 
-- `STRATA_PREFILL_LAYER_MAJOR=0`: 0.2.7 reads a long prompt layer by layer on a CUDA layer split by default; here it
-  is off by itself only because CUDA1 has ~450 MiB free. Forced on (2 GB VRAM kept free): a 64K prompt 53.0 s against
+- `STRATA_PREFILL_LAYER_MAJOR=0`: 0.2.7 reads a long prompt layer by layer on a CUDA layer split by default (0.2.10
+  no longer does, so the setting only keeps older builds the same); here it is off by itself only because CUDA1 has ~450 MiB free. Forced on (2 GB VRAM kept free): a 64K prompt 53.0 s against
   30.5 s (it streams ~74 GB of experts over PCIe 2.0; the chunk path with the CPU share does better), decode 2 % slower.
 - `STRATA_SPLIT_MTP_BATCH=1`: on a layer split the draft layer's prompt K/V was built by its own pass, 8 rows at a
   time, while the next chunk waited (405-473 ms per 8K chunk in a `STRATA_PREFILL_TIMING` run); this builds it in one
@@ -91,6 +94,18 @@ More on some of them:
   Layers or a helper cache on that x1 card were slower.
 - Memory: no `numactl`. Node 0 has a 32 GB and a 16 GB stick, so its top 16 GiB (physical 34-50 GiB) is on one channel;
   where the arena lands there differs per start (0-38 %, `~/opt-avx1/physmap.py PID arena`), about 2 % of decode.
+
+## Tried on sm_75 and dropped (2026-11-03)
+
+The decode hyper-connection read (96 a verify window: two a layer) is ~66 us at a 5-row window on the x1 CMP 50HX
+(`fused_gr_bench 300 1 6 8` with `STRATA_HC_SPLIT=2 STRATA_SM75_PERF=1`, the engine's staged read: norm 12, down 30,
+up 31 us; the weights alone need ~34 us), so ~6 ms of a ~30 ms window. Bitwise variants measured there, none kept:
+- rows a warp in the staged down kernel (the idea of upstream's `STRATA_GR_V3_PF` bits 7 / 8, whose kernels exist only
+  in the v3 read, another summation order): 2 rows 30.4 -> 34.1 us, 4 rows 52.0 us at 5 rows (20 or 10 blocks for 56 SMs);
+- `gr_up75` with two-plane `lo` (no bank conflicts) and two tokens a pass: -7 % at 4 and 6 rows, none at 3 and 5;
+- `STRATA_GR_NORM_FAST=1` (CUDA opt-in): the same time; the same shared-memory carveout for the norm and up kernels: none.
+- Seen, not changed: upstream's Turing rule of token pairs in the down kernel (measured on an RTX 2080 Ti) costs here at
+  6 rows (40.4 against 33.5 us) and gives ~1 us at 4 rows; 6-row windows come only from batch slots.
 
 ## Measured 2026-10-28 (64K cold read, decode 6 x 512 tokens at ~8K context, each start with its real settings)
 
