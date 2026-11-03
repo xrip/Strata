@@ -5,7 +5,7 @@ GDN scan on sm_75; the second, tool search, is upstream's since 0.2.10), and the
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
 
-Base: upstream 0.2.10 (`ffa80d73`, engine 0.1.56, merged 2026-11-03, built in `~/strata-next`, not deployed yet).
+Base: upstream 0.2.10 (`ffa80d73`, engine 0.1.56, merged and built on the box 2026-11-03).
 On this box's path 0.2.10 brings: `STRATA_QSA_FUSE_NR` on by default (the QSA layers' norm + rope in one pass; its
 no-fold guard is HIP-only, so it was checked here: `qsa_nr_parity` built for sm_75 by hand, 44 of 44 cases bit for
 bit on the x1 CMP 50HX, 2.25 -> 1.79 ms a QSA layer at 8,191 tokens, ~0.1 % of a read); a layer split reads prompts
