@@ -240,7 +240,13 @@ on failed for that reason): three greedy 200-token answers after 1,847-, 19,830-
 Not taken from Speedy: `STRATA_VERIFY_DEFER_CPU` (not in upstream, changes the answers), `STRATA_PROMPT_ATTN_IMMA` (no
 sm_75 kernel), `STRATA_EXCHANGE_ROTATE` (changes the bits), `STRATA_PREFILL_CPU_SHARE=0` (the share is faster here),
 the two-pass QSA select (#4119: the TF32 scorer, sm_80+), the hyper-connection read's two rows a warp (measured here
-on 2026-11-03: slower). Open: `warp_sum8` (already in upstream's v3 read) in the staged down kernel sm_75 runs.
+on 2026-11-03: slower).
+
+Tried and dropped: `warp_sum8` (Speedy's 5-8 token sum, already in upstream's v3 read) in the staged down kernel that
+sm_75 runs, for 2-8 tokens (9 shuffles instead of 5 a token, the same additions). Bitwise (`fused_gr_bench 300 1 6 8`,
+`STRATA_HC_SPLIT=2 STRATA_SM75_PERF=1`, GPU 0, 3 alternated rounds: all 36 output hashes equal), but no faster: the
+down stamp 30.8 -> 30.8 us at 5 tokens, 16.0 -> 16.1 at 1, 40.8 -> 40.7 at 6 (the kernel waits on its weight reads,
+not on the shuffles). Engine `chunk.sh L N N L`: decode 83.7 against 83.2 tok/s, reads the same (noise).
 
 ## Measured 2026-10-28 (64K cold read, decode 6 x 512 tokens at ~8K context, each start with its real settings)
 
