@@ -4,7 +4,8 @@ This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with three pa
 GDN scan on sm_75, and the fourth, 5-8 row decode windows on the interleaved kernels; the second, tool search, is upstream's since
 0.2.10), and the settings measured fastest on
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
-a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
+a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Swift 1.5 Qwen3.8-Flash-Next IQ3_S
+with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until 2026-11-04).
 
 Base: upstream 0.2.11 (`9f7d977d`, engine 0.1.57, merged, measured and deployed on the box 2026-11-05).
 On this box's path 0.2.11 brings: a CUDA layer split refines its CPU/PCIe miss share from the CPU pool's speed
@@ -156,6 +157,14 @@ grid word against all 16 sign patterns (70,656 cases, 0 differ), and `mmq_expert
 on GPU 0: IQ3_S / IQ3_XXS -2.3 / -2.8 % at 160 rows an expert, -5.0 / -5.1 % at 626; unchanged kernels moved up to
 +-7 % between runs. In the engine at 16K chunks (F T H H T F): 64K 30.19 against 30.30 s, 172K 70.26 against 70.43 s,
 decode 84.4 both: nothing measurable, so the patch (which would have to rewrite the pinned llama.cpp) is not kept.
+
+## Measured 2026-11-05 (engine 0.2.11, Swift IQ3_S + FP8 PLE; the README's table)
+
+`chunk.sh U L L U` (`~/opt-avx1/mkcfg-report.py`): U = the live config's model and capacity settings with upstream's
+defaults for every speed setting the fork changes (no fork env but `STRATA_GDN_TC=1`, upstream's server value; no
+`--pool-workers`, the engine took 18; `--prefill auto`), L = the live config. 64K cold read 45.55 / 45.84 against 30.26
+/ 30.33 s, 172K 127.52 / 128.23 against 70.47 / 70.41 s, decode at 8K 75.0 / 74.3 against 84.1 / 85.0 tok/s (37.7 /
+38.1 against 32.1 / 32.9 ms a window).
 
 ## Measured 2026-10-28 (64K cold read, decode 6 x 512 tokens at ~8K context, each start with its real settings)
 
