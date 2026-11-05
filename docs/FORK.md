@@ -13,12 +13,11 @@ On this box's path 0.2.11 brings: a CUDA layer split refines its CPU/PCIe miss s
 15.8-16.2 GB/s of expert bytes); a later stage keeps 256 MiB free for what it allocates after its cache (CUDA1: 6,389 ->
 6,267 expert slots, 346 -> 602 MiB free, no LOW warning); and ~15 server fixes (an engine is ended only where the
 request really ran, a client that stops reading no longer holds the turn, console output through a bounded queue).
-Measured (`quick.sh` A B E E B A, the live Swift IQ3_S config, vision on GPU 2): 64K cold read 34.09 s on the 0.2.10
-build against 34.54 s on 0.2.11 (-1.3 %, either share rule); decode at 8K 84.9, 83.3 with the new rule (-1.9 %) and
-84.4 tok/s with `STRATA_PCIE_AUTO_SPLIT=0` (31.7 / 32.1 / 31.8 ms a window). So the configs pin `=0`. Not on this
-box's path: the cc 8.0+ defaults (`STRATA_MMQ_KQ`, 32K prompt chunks), the gfx12 ring, the Q5_0 expert dot (no Q5_0
-here), the all-cards split engine, DFlash2. The FP16 weight cache is now on with batch slots on Linux CUDA when 3 GiB
-stay free (not on these cards). Base before: upstream 0.2.10 (`ffa80d73`, engine 0.1.56, 2026-11-03).
+The new share rule costs decode here, so the configs pin `STRATA_PCIE_AUTO_SPLIT=0` (the table "The 0.2.11 sync"
+below). Adapted from it: the 32K prompt-chunk ceiling of cc 8.0+ cards, as `--prefill auto:16384` (the table "Prompt
+chunk size" below). Not on this box's path: `STRATA_MMQ_KQ` (no K-quant experts here), the gfx12 ring, the Q5_0 expert
+dot (no Q5_0 here), the all-cards split engine, DFlash2. The FP16 weight cache is now on with batch slots on Linux CUDA
+when 3 GiB stay free (not on these cards). Base before: upstream 0.2.10 (`ffa80d73`, engine 0.1.56, 2026-11-03).
 0.2.10 brought: `STRATA_QSA_FUSE_NR` on by default (the QSA layers' norm + rope in one pass; its
 no-fold guard is HIP-only, so it was checked here: `qsa_nr_parity` built for sm_75 by hand, 44 of 44 cases bit for
 bit on the x1 CMP 50HX, 2.25 -> 1.79 ms a QSA layer at 8,191 tokens, ~0.1 % of a read); a layer split reads prompts
@@ -120,11 +119,10 @@ More on some of them:
   30.5 s (it streams ~74 GB of experts over PCIe 2.0; the chunk path with the CPU share does better), decode 2 % slower.
 - `--prefill auto:16384` with `STRATA_PREFILL_CPU_SHARE_MAX=16384` (adapted from 0.2.11's 32K ceiling for cc 8.0+
   single cards; a bare `auto` takes 8,192 on any layer split, measured on 2x R9700): over PCIe 2.0 every chunk streams
-  the experts the cards do not hold, so half as many chunks stream half as much. `chunk.sh` (64K and 172K cold reads,
-  decode at 8K, the live Swift IQ3_S config, 2026-11-05, two starts an arm): 8K 34.59 / 87.93 s, 85.2 tok/s; 16K 30.21 /
-  70.40 s (-12.7 % / -19.9 %), 84.5 and 84.4 tok/s (noise); `auto:32768` gives 26,624-token chunks with an 8-slot
-  ring (38.90 / 76.18 s), `auto:20480` 16,384 with an 8-slot ring (34.92 / 80.30 s). The share limit must follow the
-  chunk, or the 16K chunks lose the CPU share.
+  the experts the cards do not hold, so half as many chunks stream half as much. Measured: the table "Prompt chunk
+  size" below. The share limit must follow the chunk, or the 16K chunks lose the CPU share. Not bit-exact against 8K
+  chunks (no chunk size change is: upstream's 0.2.11 notes, near-tie block choices in the attention); kept as
+  upstream keeps its own 32K default.
 - `STRATA_SPLIT_MTP_BATCH=1`: on a layer split the draft layer's prompt K/V was built by its own pass, 8 rows at a
   time, while the next chunk waited (405-473 ms per 8K chunk in a `STRATA_PREFILL_TIMING` run); this builds it in one
   batched pass on CUDA1. Only the drafts can change, not the model's tokens. A 64K cold read 30.70 / 30.61 s against
@@ -153,18 +151,64 @@ up 31 us; the weights alone need ~34 us), so ~6 ms of a ~30 ms window. Bitwise v
 The i-quant sign expansion of 0.2.11's HIP split engine (`750cbf0d`): a multiply and a mask in place of `__vcmpne4` /
 `__vsub4`, which CUDA cards since Maxwell emulate. Ported to the decode dots (`iq_kernels.cu`, 16 places) and ggml's MMQ
 tile loads (IQ2_XXS / IQ2_XS / IQ2_S / IQ3_XXS / IQ3_S). The same integers: a CPU check of every sign byte and of every
-grid word against all 16 sign patterns (70,656 cases, 0 differ), and `mmq_expert_bench` output hashes equal. MMQ gate/up
-on GPU 0: IQ3_S / IQ3_XXS -2.3 / -2.8 % at 160 rows an expert, -5.0 / -5.1 % at 626; unchanged kernels moved up to
-+-7 % between runs. In the engine at 16K chunks (F T H H T F): 64K 30.19 against 30.30 s, 172K 70.26 against 70.43 s,
-decode 84.4 both: nothing measurable, so the patch (which would have to rewrite the pinned llama.cpp) is not kept.
+grid word against all 16 sign patterns (70,656 cases, 0 differ), and `mmq_expert_bench` output hashes equal for every
+case. Not kept: nothing measurable in the engine, and the patch would have to rewrite the pinned llama.cpp.
 
-## Measured 2026-11-05 (engine 0.2.11, Swift IQ3_S + FP8 PLE; the README's table)
+| `mmq_expert_bench` on GPU 0, gate/up, medians of 3 alternated runs | 160 rows an expert (8K chunk) | 626 rows (32K) |
+|---|---:|---:|
+| IQ3_S | -2.3 % | -5.0 % |
+| IQ3_XXS | -2.8 % | -5.1 % |
+| IQ2_S | -0.3 % | -1.4 % |
+| IQ2_XS | +1.0 % | -9.9 % |
+| unchanged kernels (NVFP4, Q8_0, IQ4_NL), for the noise | -0.5 .. +0.3 % | -0.1 .. +7.6 % |
 
-`chunk.sh U L L U` (`~/opt-avx1/mkcfg-report.py`): U = the live config's model and capacity settings with upstream's
-defaults for every speed setting the fork changes (no fork env but `STRATA_GDN_TC=1`, upstream's server value; no
-`--pool-workers`, the engine took 18; `--prefill auto`), L = the live config. 64K cold read 45.55 / 45.84 against 30.26
-/ 30.33 s, 172K 127.52 / 128.23 against 70.47 / 70.41 s, decode at 8K 75.0 / 74.3 against 84.1 / 85.0 tok/s (37.7 /
-38.1 against 32.1 / 32.9 ms a window).
+| The engine at 16K chunks (`chunk.sh F T H H T F`, its F and T starts) | 64K read | 172K read | decode at 8K |
+|---|---:|---:|---:|
+| F: live | 30.20 / 30.18 s | 70.21 / 70.30 s | 84.7 / 84.0 tok/s |
+| T: + the sign patch | 30.17 / 30.43 s | 70.37 / 70.49 s | 84.1 / 84.8 tok/s |
+
+## Measured 2026-11-05 (engine 0.2.11, Swift IQ3_S + FP8 PLE, vision on GPU 2 as live)
+
+Every start with the page cache dropped (`dropwrap.sh`), inside `perf.sh` (the idle governor off); `chunk.sh`: a
+warm-up, a 64K and a 172K prompt read cold (another first line, so nothing is reused), then 6 x 512 greedy tokens at
+~8K context. Two starts an arm, interleaved; each cell gives both. Tools in `~/opt-avx1` on the box.
+
+### Stock upstream against this fork + config (the README's table; `chunk.sh U L L U`, `mkcfg-report.py`)
+
+U keeps the live config's model and capacity settings (393K context with YaRN, MTP, int8 KV, the conversation cache,
+pictures) and takes upstream's defaults for every speed setting the fork changes: no fork env except
+`STRATA_GDN_TC=1` (upstream's server value, which leaves sm_75 on the old scan), no `--pool-workers` (the engine took
+18), `--prefill auto` (8K chunks).
+
+| | 64K read | 172K read | decode at 8K | ms per verify window |
+|---|---:|---:|---:|---:|
+| U: stock upstream | 45.55 / 45.84 s (1,441 tok/s) | 127.52 / 128.23 s (1,349 tok/s) | 75.0 / 74.3 tok/s | 37.7 / 38.1 |
+| L: this fork + the live config | 30.26 / 30.33 s (2,173 tok/s) | 70.47 / 70.41 s (2,449 tok/s) | 84.1 / 85.0 tok/s | 32.1 / 32.9 |
+| **L faster than U** | **+51 %** (34 % less time) | **+82 %** (45 % less time) | **+13 %** | 14 % less |
+
+### The 0.2.11 sync (`quick.sh A B E E B A`, 64K read and decode only, `mkcfg-0211.py`, 8K chunks)
+
+| | 64K read | decode at 8K | ms per verify window |
+|---|---:|---:|---:|
+| A: the 0.2.10 build (live before) | 34.00 / 34.18 s | 85.1 / 84.6 tok/s | 31.6 / 31.9 |
+| B: 0.2.11 as shipped (PCIe share refined to 0.25-0.30) | 34.59 / 34.49 s (+1.3 %) | 83.5 / 83.2 tok/s (-1.9 %) | 32.1 / 32.2 |
+| E: 0.2.11 + `STRATA_PCIE_AUTO_SPLIT=0` (the probe's 0.17) | 34.58 / 34.49 s (+1.3 %) | 85.0 / 83.9 tok/s (-0.6 %, noise) | 31.6 / 32.0 |
+
+The reads' +1.3 % comes with 0.2.11 under either rule (likely the later stage's 256 MiB reserve: CUDA1 6,389 -> 6,267
+expert slots; not split out).
+
+### Prompt chunk size (`chunk.sh A F G G F A`, then `F T H H T F`; `mkcfg-chunk.py`)
+
+| `--prefill` (the engine's pick, the staging ring) | 64K read | 172K read | decode at 8K |
+|---|---:|---:|---:|
+| `auto` (8,192, 384 slots; live before) | 34.58 / 34.60 s | 87.85 / 88.00 s | 85.2 / 85.2 tok/s |
+| **`auto:16384`** (16,384, 384 slots; live now), first round | 30.11 / 30.31 s (**-12.7 %**) | 70.23 / 70.57 s (**-19.9 %**) | 84.8 / 84.2 tok/s |
+| `auto:16384`, second round | 30.20 / 30.18 s | 70.21 / 70.30 s | 84.7 / 84.0 tok/s |
+| `auto:20480` (16,384, 8 slots) | 34.91 / 34.92 s | 80.06 / 80.54 s | 84.9 / 85.1 tok/s |
+| `auto:32768` (26,624, 8 slots) | 38.88 / 38.91 s | 76.18 / 76.17 s | 82.8 / 81.9 tok/s |
+
+Each arm with `STRATA_PREFILL_CPU_SHARE_MAX` equal to its ceiling. Above 16K the cards' VRAM leaves the prompt path a
+ring of 8 slots, and the reads slow down again.
 
 ## Measured 2026-10-28 (64K cold read, decode 6 x 512 tokens at ~8K context, each start with its real settings)
 
