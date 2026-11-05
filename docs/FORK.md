@@ -210,6 +210,38 @@ expert slots; not split out).
 Each arm with `STRATA_PREFILL_CPU_SHARE_MAX` equal to its ceiling. Above 16K the cards' VRAM leaves the prompt path a
 ring of 8 slots, and the reads slow down again.
 
+### Upstream opt-ins the Speedy fork runs (`chunk.sh L P Q E E Q P L`, `mkcfg-knobs.py`; live since 2026-11-05 20:15)
+
+[DevDock-AI/Speedy](https://github.com/DevDock-AI/Speedy) (a Strata fork on 0.2.7.1, tuned on an RTX 3080) turns on
+upstream opt-ins that are documented as the same bits. P = the live config + `STRATA_PF_GROUP_SCRATCH=1`
+`STRATA_PF_HC_REGION=1` (smaller prompt buffers), `STRATA_KV_PREFETCH=1` (the next layer's KV upload beside the
+compute), `STRATA_PREFILL_ROUTED_STREAM=1` (no copy of an expert no token of the chunk routes to),
+`STRATA_MTP_ROOM_MIN=16384` (the draft layer's 675 MiB of experts lent to the prompt ring on reads of 16K+); Q = P at
+`auto:32768`; E = the live config + `STRATA_EXPDEC=1 STRATA_EXPDEC_DOWN=1` (the decode experts with the window's
+activations in shared memory, measured upstream on an RTX 2080 Ti).
+
+| | 64K read | 172K read | decode at 8K | ms per verify window |
+|---|---:|---:|---:|---:|
+| L: live before | 29.91 / 30.17 s | 69.89 / 70.30 s | 84.3 / 85.4 tok/s | 32.0 / 32.1 |
+| **P: + the prompt switches** (live now) | 29.08 / 29.33 s (**-2.8 %**) | 67.23 / 67.47 s (**-3.9 %**) | 84.7 / 85.2 tok/s | 32.9 / 32.9 |
+| Q: P with 32K chunks (32,768, now with a 384-slot ring) | 34.51 / 34.67 s (+15 %) | 71.74 / 71.66 s (+2.3 %) | 83.8 / 84.3 tok/s | 32.6 / 32.4 |
+| E: + EXPDEC | 30.20 / 30.22 s | 70.74 / 70.68 s | 82.2 / 82.9 tok/s (-2.8 %) | 32.1 / 31.7 |
+
+Exactness (`gate2.sh`; every arm with `STRATA_PREFILL_CPU_SHARE=0`, `--adapt-swaps 0`, `--pcie-frac 0.17`, 16K chunks:
+the live CPU share follows run-time timings, so two runs of one config can round apart with it; a first gate with it
+on failed for that reason): three greedy 200-token answers after 1,847-, 19,830- and 69,820-token prompts.
+
+| | 2K | 20K | 70K |
+|---|---|---|---|
+| base against base (the control) | same | same | same |
+| P against base | same | same | same |
+| E against base | same | same | same |
+
+Not taken from Speedy: `STRATA_VERIFY_DEFER_CPU` (not in upstream, changes the answers), `STRATA_PROMPT_ATTN_IMMA` (no
+sm_75 kernel), `STRATA_EXCHANGE_ROTATE` (changes the bits), `STRATA_PREFILL_CPU_SHARE=0` (the share is faster here),
+the two-pass QSA select (#4119: the TF32 scorer, sm_80+), the hyper-connection read's two rows a warp (measured here
+on 2026-11-03: slower). Open: `warp_sum8` (already in upstream's v3 read) in the staged down kernel sm_75 runs.
+
 ## Measured 2026-10-28 (64K cold read, decode 6 x 512 tokens at ~8K context, each start with its real settings)
 
 | | 64K read | decode | ms per verify window |
