@@ -33,7 +33,7 @@ The config (`strata-iq3_xxs.json`), on top of what setup writes:
         "STRATA_SM75_PERF": "1", "STRATA_EXP_MODE": "8",
         "STRATA_SIDE_MIXER": "2", "STRATA_ATTN_DAILY": "1", "STRATA_B6_MMVQ_ROWS": "1",
         "STRATA_SPLIT_MTP_BATCH": "1", "STRATA_PREFILL_LAYER_MAJOR": "0", "STRATA_GDN_TC": "2",
-        "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_ROUTE_PRIOR": "0"},
+        "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_ROUTE_PRIOR": "0", "STRATA_PCIE_AUTO_SPLIT": "0"},
 "args": [..., "--pool-workers", "19", "--max-context", "393216", "--kv", "int8",
          "--conversation-cache-mib", "16384", "--conversation-cache-slots", "16", "--conversation-cache-min-tokens", "32768",
          "--conversation-disk-dir", "/mnt/hdd12tb/conversation-cache", "--conversation-disk-persist", "on",
@@ -54,6 +54,7 @@ them together):
 | `STRATA_PREFILL_LAYER_MAJOR=0` | keeps the chunked prompt path; 0.2.7's layer-by-layer path streams the experts over PCIe 2.0 | forced on: 64K prompt 53.0 s against 30.5 s (2026-10-28) |
 | `STRATA_GDN_TC=2` (the third patch) | the prompt's DeltaNet recurrence on the tensor cores, also on sm_75 (not bitwise, upstream's rounding) | recurrence 11.2 -> 5.1 ms a layer at 8K; prompt reads of 4-46K tokens 6 % faster than 0.2.8 (2026-11-01) |
 | `STRATA_ROUTE_TAIL_SKIP=0`, `STRATA_ROUTE_PRIOR=0` | the model's own routing, so the answers stay exact | the tail skip gave no speed here |
+| `STRATA_PCIE_AUTO_SPLIT=0` | keeps the CPU/PCIe miss share of a layer split at the probe's 0.17; 0.2.11 refines it from the CPU pool (0.25-0.30 here) | 0.2.11's rule: decode 84.4 -> 83.3 tok/s, -1.3 % (2026-11-05, Swift IQ3_S) |
 | `"gpu": [0, 1]`, `--layer-split auto` | the two x16 cards share the layers; the x1 card is left out (upstream's setup offers it as a helper) | a helper cache on the x1 card: decode 34-108 % slower (2026-10-18) |
 | conversation cache (16 GiB, 16 slots, from 32K tokens) + `--conversation-disk-dir` (the patch) | parked agent conversations stay in RAM, then on the HDD, and survive a restart | 286,199 tokens back from the HDD in 41.7 s; a cold read ~136 s |
 | `--prompt-cache-spread`, `--prompt-cache 8` | after an agent edits its history, the read restarts near the edit | a 196K conversation reused 187,696 tokens, not a ~100 s re-read |

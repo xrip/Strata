@@ -6,8 +6,19 @@ GDN scan on sm_75, and the fourth, 5-8 row decode windows on the interleaved ker
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Qwen3.8-Flash-Next IQ3_XXS.
 
-Base: upstream 0.2.10 (`ffa80d73`, engine 0.1.56, merged and built on the box 2026-11-03).
-On this box's path 0.2.10 brings: `STRATA_QSA_FUSE_NR` on by default (the QSA layers' norm + rope in one pass; its
+Base: upstream 0.2.11 (`9f7d977d`, engine 0.1.57, merged, measured and deployed on the box 2026-11-05).
+On this box's path 0.2.11 brings: a CUDA layer split refines its CPU/PCIe miss share from the CPU pool's speed
+(`STRATA_PCIE_AUTO_SPLIT`, on by default on a discrete card; here the share went 0.17 -> 0.25-0.30, the pool measured
+15.8-16.2 GB/s of expert bytes); a later stage keeps 256 MiB free for what it allocates after its cache (CUDA1: 6,389 ->
+6,267 expert slots, 346 -> 602 MiB free, no LOW warning); and ~15 server fixes (an engine is ended only where the
+request really ran, a client that stops reading no longer holds the turn, console output through a bounded queue).
+Measured (`quick.sh` A B E E B A, the live Swift IQ3_S config, vision on GPU 2): 64K cold read 34.09 s on the 0.2.10
+build against 34.54 s on 0.2.11 (-1.3 %, either share rule); decode at 8K 84.9, 83.3 with the new rule (-1.9 %) and
+84.4 tok/s with `STRATA_PCIE_AUTO_SPLIT=0` (31.7 / 32.1 / 31.8 ms a window). So the configs pin `=0`. Not on this
+box's path: the cc 8.0+ defaults (`STRATA_MMQ_KQ`, 32K prompt chunks), the gfx12 ring, the Q5_0 expert dot (no Q5_0
+here), the all-cards split engine, DFlash2. The FP16 weight cache is now on with batch slots on Linux CUDA when 3 GiB
+stay free (not on these cards). Base before: upstream 0.2.10 (`ffa80d73`, engine 0.1.56, 2026-11-03).
+0.2.10 brought: `STRATA_QSA_FUSE_NR` on by default (the QSA layers' norm + rope in one pass; its
 no-fold guard is HIP-only, so it was checked here: `qsa_nr_parity` built for sm_75 by hand, 44 of 44 cases bit for
 bit on the x1 CMP 50HX, 2.25 -> 1.79 ms a QSA layer at 8,191 tokens, ~0.1 % of a read); a layer split reads prompts
 chunk-major by default (the config's `STRATA_PREFILL_LAYER_MAJOR=0` is now the default); the tool search code of
@@ -148,7 +159,8 @@ tested. Tools on the box: `~/opt-avx1/quick.sh` (this table), `perf.sh` (the idl
 `generate.cpp` (marked `--conversation-disk-dir`), `conversation_cache.hpp` (`set_on_evict`, `shared_tokens`, the 90 %
 rule) and the server's cache card. The fourth: `Q81Il` (`PLANES`) and `il_pm_at` (re-run `mmvq_il_parity` after a
 sync that touches `native_mmvq.cu`). The third patch: `gdn_tc.cuh`, `gdn_rec_tc` and `GDN_STACK_CUDA` (keep `"2"` when
-upstream changes that line). After every sync, on the x1 card: `CUDA_VISIBLE_DEVICES=2 STRATA_GDN_TC=2 gdn_harness
+upstream changes that line). After every sync, on GPU 0 with Strata stopped (the x1 card runs other work now):
+`CUDA_VISIBLE_DEVICES=0 STRATA_GDN_TC=2 gdn_harness
 --T 5000 --chunk 2500 --cuts 37 --paths auto,pipe --ref-heads 0,17,47` must show `tc->tc` and PASS on the `auto` line
 (`tc->pipe` means the sm_75 scan is off), and `python -m pytest serve/test_parallel.py -k GdnStack` must pass. Skip the
 speed test when nothing on this box's path changed (DeepSeek, AVX2/AVX-512 kernels, one-GPU features); otherwise
