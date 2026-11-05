@@ -19,10 +19,12 @@ and a 172K prompt read cold, then 6 x 512 tokens of decode at ~8K context; range
 
 | | 64K prompt | 172K prompt | Decode | ms per verify window |
 |---|---:|---:|---:|---:|
-| Upstream's defaults: no fork env, the engine's own pool size (18 here), `--prefill auto` | 45.55-45.84 s | 127.5-128.2 s | 74.3-75.0 tok/s | 37.7-38.1 |
-| This config (the live one) | 30.26-30.33 s | 70.41-70.47 s | 84.1-85.0 tok/s | 32.1-32.9 |
+| Stock upstream: no fork env, the engine's own pool size (18 here), `--prefill auto` | 45.55-45.84 s (1,441 tok/s) | 127.5-128.2 s (1,349 tok/s) | 74.3-75.0 tok/s | 37.7-38.1 |
+| This fork + this config (the live one) | 30.26-30.33 s (2,173 tok/s) | 70.41-70.47 s (2,449 tok/s) | 84.1-85.0 tok/s | 32.1-32.9 |
+| **Faster than stock** | **+51 %** (34 % less time) | **+82 %** (45 % less time) | **+13 %** | 14 % less |
 
-The prompt reads 1.51x faster at 64K and 1.82x at 172K, decode is 1.13x. Both arms keep the same model and capacity
+The longer the prompt, the bigger the gain: a 172K prompt that takes stock Strata 2 min 8 s is read here in 1 min 10 s.
+Both arms keep the same model and capacity
 settings (393K context with YaRN, MTP drafts, int8 KV, the conversation cache, pictures on the third card); upstream's
 server sets `STRATA_GDN_TC=1`, which leaves sm_75 on the old scan. Decode of one config moves ~2 % from start to start
 here (where the expert memory lands in RAM). The table of 2026-10-28 (engine 0.2.7, the original IQ3_XXS) is in
