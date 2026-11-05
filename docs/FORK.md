@@ -117,6 +117,13 @@ More on some of them:
 - `STRATA_PREFILL_LAYER_MAJOR=0`: 0.2.7 reads a long prompt layer by layer on a CUDA layer split by default (0.2.10
   no longer does, so the setting only keeps older builds the same); here it is off by itself only because CUDA1 has ~450 MiB free. Forced on (2 GB VRAM kept free): a 64K prompt 53.0 s against
   30.5 s (it streams ~74 GB of experts over PCIe 2.0; the chunk path with the CPU share does better), decode 2 % slower.
+- `--prefill auto:16384` with `STRATA_PREFILL_CPU_SHARE_MAX=16384` (adapted from 0.2.11's 32K ceiling for cc 8.0+
+  single cards; a bare `auto` takes 8,192 on any layer split, measured on 2x R9700): over PCIe 2.0 every chunk streams
+  the experts the cards do not hold, so half as many chunks stream half as much. `chunk.sh` (64K and 172K cold reads,
+  decode at 8K, the live Swift IQ3_S config, 2026-11-05, two starts an arm): 8K 34.59 / 87.93 s, 85.2 tok/s; 16K 30.21 /
+  70.40 s (-12.7 % / -19.9 %), 84.5 and 84.4 tok/s (noise); `auto:32768` gives 26,624-token chunks with an 8-slot
+  ring (38.90 / 76.18 s), `auto:20480` 16,384 with an 8-slot ring (34.92 / 80.30 s). The share limit must follow the
+  chunk, or the 16K chunks lose the CPU share.
 - `STRATA_SPLIT_MTP_BATCH=1`: on a layer split the draft layer's prompt K/V was built by its own pass, 8 rows at a
   time, while the next chunk waited (405-473 ms per 8K chunk in a `STRATA_PREFILL_TIMING` run); this builds it in one
   batched pass on CUDA1. Only the drafts can change, not the model's tokens. A 64K cold read 30.70 / 30.61 s against
@@ -139,6 +146,16 @@ up 31 us; the weights alone need ~34 us), so ~6 ms of a ~30 ms window. Bitwise v
 - `STRATA_GR_NORM_FAST=1` (CUDA opt-in): the same time; the same shared-memory carveout for the norm and up kernels: none.
 - Seen, not changed: upstream's Turing rule of token pairs in the down kernel (measured on an RTX 2080 Ti) costs here at
   6 rows (40.4 against 33.5 us) and gives ~1 us at 4 rows; 6-row windows come only from batch slots.
+
+## Tried on sm_75 and dropped (2026-11-05)
+
+The i-quant sign expansion of 0.2.11's HIP split engine (`750cbf0d`): a multiply and a mask in place of `__vcmpne4` /
+`__vsub4`, which CUDA cards since Maxwell emulate. Ported to the decode dots (`iq_kernels.cu`, 16 places) and ggml's MMQ
+tile loads (IQ2_XXS / IQ2_XS / IQ2_S / IQ3_XXS / IQ3_S). The same integers: a CPU check of every sign byte and of every
+grid word against all 16 sign patterns (70,656 cases, 0 differ), and `mmq_expert_bench` output hashes equal. MMQ gate/up
+on GPU 0: IQ3_S / IQ3_XXS -2.3 / -2.8 % at 160 rows an expert, -5.0 / -5.1 % at 626; unchanged kernels moved up to
++-7 % between runs. In the engine at 16K chunks (F T H H T F): 64K 30.19 against 30.30 s, 172K 70.26 against 70.43 s,
+decode 84.4 both: nothing measurable, so the patch (which would have to rewrite the pinned llama.cpp) is not kept.
 
 ## Measured 2026-10-28 (64K cold read, decode 6 x 512 tokens at ~8K context, each start with its real settings)
 
