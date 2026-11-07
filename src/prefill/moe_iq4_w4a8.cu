@@ -64,8 +64,16 @@ struct Tab16 {
     const char* p[kGatherGroupMax];
 };
 
-// cp.async, ldmatrix and mma.sync s8 need sm_80: below it (the sm_60..75 targets of the CUDA 12 and CUDA 13 release engines) the
-// device side is a trap, never launched because arch_ok() declines those cards on the host
+// cp.async and mma.sync m16n8k32 s8 need sm_80: below it (the sm_60..75 targets of the CUDA 12 and CUDA 13 release engines) the
+// device side is a trap, never launched because arch_ok() declines those cards on the host.
+// sm_75 (Turing): ldmatrix and mma.sync m8n8k16 s8 exist there, so the same tile runs with the next K step's pieces
+// loaded into registers before this step's MMAs and stored to shared memory after them (no cp.async), and each m16n8k32
+// as four m8n8k16 (exact int32 sums from the same C, so the same bits).
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750 && __CUDA_ARCH__ < 800
+#define STRATA_W4A8_SM75 1
+#else
+#define STRATA_W4A8_SM75 0
+#endif
 __device__ __forceinline__ void cp8(uint32_t dst, const void* src) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
     __trap();   // never launched below sm_80: arch_ok() declines those cards
@@ -96,7 +104,7 @@ __device__ __forceinline__ void cp_wait() {
 #endif
 }
 __device__ __forceinline__ void ldsm4(uint32_t& r0, uint32_t& r1, uint32_t& r2, uint32_t& r3, uint32_t addr) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 750
     r0 = r1 = r2 = r3 = 0;
     __trap();   // never launched below sm_80: arch_ok() declines those cards
 #else
@@ -110,7 +118,17 @@ __device__ __forceinline__ void lds128(float4& v, uint32_t addr) {
 }
 template <uint32_t C0>
 __device__ __forceinline__ void mma_s8(int (&c)[4], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+#if STRATA_W4A8_SM75
+    // m16n8k32 = rows g (a0: k 0..15, a2: k 16..31) and rows g + 8 (a1, a3) against b0 (k 0..15) and b1 (k 16..31)
+    asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0, %1}, {%2}, {%3}, {%4, %4};\n"
+        : "=r"(c[0]), "=r"(c[1]) : "r"(a[0]), "r"(b0), "r"(C0));
+    asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0, %1}, {%2}, {%3}, {%0, %1};\n"
+        : "+r"(c[0]), "+r"(c[1]) : "r"(a[2]), "r"(b1));
+    asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0, %1}, {%2}, {%3}, {%4, %4};\n"
+        : "=r"(c[2]), "=r"(c[3]) : "r"(a[1]), "r"(b0), "r"(C0));
+    asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0, %1}, {%2}, {%3}, {%0, %1};\n"
+        : "+r"(c[2]), "+r"(c[3]) : "r"(a[3]), "r"(b1));
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
     c[0] = c[1] = c[2] = c[3] = 0;
     __trap();   // never launched below sm_80: arch_ok() declines those cards
 #else
@@ -154,37 +172,77 @@ __device__ __forceinline__ void tile(const char* __restrict__ w, const char* __r
     const int my_r = tid & (kBM - 1), my_p0 = tid >> 7;
     const char* my_row = w + (int64_t) (row0 + my_r) * row_bytes;
 
+    // weights: 128 rows x 9 pieces of 8 bytes (IQ4_XS: the super-block's 8-byte header + this half's 64 qs
+    // bytes; IQ4_NL: 4 blocks of 18 bytes)
+    // (thread tid copies pieces tid/128, +2, +4, ... of row tid % 128)
+    auto wpiece = [&](int kb, int p) -> const char* {
+        const char* rk = XS ? my_row + (int64_t) (kb >> 1) * 136 : my_row + (int64_t) kb * 72;
+        if constexpr (XS) return p == 0 ? rk : rk + 8 + (kb & 1) * 64 + (p - 1) * 8;
+        else return rk + p * 8;
+    };
+    // activations: the tile's rows are consecutive in each 128-value block of the q8_1 array
+    auto ystep = [&](int kb) { return y + ((int64_t) kb * ncols_y + yrow0) * kYRow; };
+
+#if STRATA_W4A8_SM75
+    // the next step's pieces in registers: up to 5 weight pieces (p = my_p0 + 2j < 9) and 5 activation pieces
+    // (i = tid + 256j < NT * 72) per thread
+    static_assert(C::STAGES == 2, "sm_75: this step's stage and the next one's");
+    uint2 wr[5];
+    uint4 yr[5];
+    auto load = [&](int kb) {
+#pragma unroll
+        for (int j = 0; j < 5; ++j)
+            if (my_p0 + 2 * j < 9) wr[j] = *(const uint2*) wpiece(kb, my_p0 + 2 * j);
+        const char* yk = ystep(kb);
+#pragma unroll
+        for (int j = 0; j < 5; ++j)
+            if (tid + j * kThreads < NT * 8 * 9) yr[j] = *(const uint4*) (yk + (int64_t) (tid + j * kThreads) * 16);
+    };
+    auto store = [&](int st) {
+        unsigned char* sw = smem + st * C::Stage;
+        unsigned char* dw = sw + my_r * C::WROW;
+#pragma unroll
+        for (int j = 0; j < 5; ++j)
+            if (my_p0 + 2 * j < 9) *(uint2*) (dw + (my_p0 + 2 * j) * 8) = wr[j];
+#pragma unroll
+        for (int j = 0; j < 5; ++j)
+            if (tid + j * kThreads < NT * 8 * 9) *(uint4*) (sw + C::WStage + (tid + j * kThreads) * 16) = yr[j];
+    };
+#else
     auto issue = [&](int kb, int st) {
         const uint32_t sw = s0 + st * C::Stage, sy = sw + C::WStage;
-        // weights: 128 rows x 9 pieces of 8 bytes (IQ4_XS: the super-block's 8-byte header + this half's 64 qs
-        // bytes; IQ4_NL: 4 blocks of 18 bytes)
-        // (thread tid copies pieces tid/128, +2, +4, ... of row tid % 128)
         const uint32_t dw = sw + my_r * C::WROW;
-        const char* rk = XS ? my_row + (int64_t) (kb >> 1) * 136 : my_row + (int64_t) kb * 72;
 #pragma unroll
-        for (int p = my_p0; p < 9; p += 2) {
-            const char* src;
-            if constexpr (XS) src = p == 0 ? rk : rk + 8 + (kb & 1) * 64 + (p - 1) * 8;
-            else src = rk + p * 8;
-            cp8(dw + p * 8, src);
-        }
-        // activations: the tile's rows are consecutive in each 128-value block of the q8_1 array
-        const char* yk = y + ((int64_t) kb * ncols_y + yrow0) * kYRow;
+        for (int p = my_p0; p < 9; p += 2) cp8(dw + p * 8, wpiece(kb, p));
+        const char* yk = ystep(kb);
 #pragma unroll
         for (int i = tid; i < NT * 8 * 9; i += kThreads) cp16(sy + i * 16, yk + (int64_t) i * 16);
     };
+#endif
 
     float acc[NT][4];
 #pragma unroll
     for (int n = 0; n < NT; ++n) acc[n][0] = acc[n][1] = acc[n][2] = acc[n][3] = 0.0f;
 
+#if STRATA_W4A8_SM75
+    if (nk > 0) {
+        load(0);
+        store(0);
+    }
+#else
 #pragma unroll
     for (int s = 0; s < C::STAGES - 1; ++s) {
         if (s < nk) issue(s, s);
         cp_commit();
     }
+#endif
 
     for (int kb = 0; kb < nk; ++kb) {
+#if STRATA_W4A8_SM75
+        __syncthreads();   // step kb's stage is stored; every warp is done with the stage step kb + 1 overwrites
+        const bool more = kb + 1 < nk;
+        if (more) load(kb + 1);
+#else
         cp_wait<C::STAGES - 2>();
         __syncthreads();
         {
@@ -192,6 +250,7 @@ __device__ __forceinline__ void tile(const char* __restrict__ w, const char* __r
             if (kn < nk) issue(kn, kn % C::STAGES);
             cp_commit();
         }
+#endif
         const int st = kb % C::STAGES;
         const unsigned char* W = smem + st * C::Stage + warp * 16 * C::WROW;
         const unsigned char* Wg = W + g * C::WROW;
@@ -319,8 +378,13 @@ __device__ __forceinline__ void tile(const char* __restrict__ w, const char* __r
             }
         }
         }
+#if STRATA_W4A8_SM75
+        if (more) store((kb + 1) & 1);
+#endif
     }
+#if !STRATA_W4A8_SM75
     cp_wait<0>();
+#endif
 
     const int r = row0 + warp * 16 + g;
 #pragma unroll
@@ -345,8 +409,8 @@ __global__ void __launch_bounds__(kThreads, C::MINB)
     iq4_w4a8_kernel(Tab16 tab, const char* __restrict__ y, const int32_t* __restrict__ ids,
                     const int32_t* __restrict__ bounds, float* __restrict__ dst, int64_t ld_dst, int nk,
                     int64_t row_bytes, int64_t ncols_y, int nty, int ntx) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
-    __trap();   // never launched below sm_80: arch_ok() declines those cards
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 750
+    __trap();   // never launched below sm_75: arch_ok() declines those cards
 #else
     extern __shared__ __align__(16) unsigned char smem[];
     const int it = blockIdx.x % nty, rest = blockIdx.x / nty;
@@ -433,8 +497,8 @@ void launch(bool xs, const Tab16& tab, const Product& p, int64_t row_bytes, cuda
 }  // namespace
 
 // the compute capabilities the kernel's bits were checked against MMQ's on (prefill_iq4_w4a8_test): Ampere (8.0-8.8) and
-// Blackwell 12.0; Ada (8.9) has no card to test on, so it keeps MMQ
-static bool arch_ok(int cc) { return (cc >= 80 && cc < 89) || cc == 120; }
+// Blackwell 12.0, and Turing 7.5 through the sm_75 path above (CMP 50HX); Ada (8.9) has no card to test on, so it keeps MMQ
+static bool arch_ok(int cc) { return cc == 75 || (cc >= 80 && cc < 89) || cc == 120; }
 
 void report_counts();
 int iq4_w4a8_mode() {
