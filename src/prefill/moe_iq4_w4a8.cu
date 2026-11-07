@@ -66,9 +66,7 @@ struct Tab16 {
 
 // cp.async and mma.sync m16n8k32 s8 need sm_80: below it (the sm_60..75 targets of the CUDA 12 and CUDA 13 release engines) the
 // device side is a trap, never launched because arch_ok() declines those cards on the host.
-// sm_75 (Turing): ldmatrix and mma.sync m8n8k16 s8 exist there, so the same tile runs with the next K step's pieces
-// loaded into registers before this step's MMAs and stored to shared memory after them (no cp.async), and each m16n8k32
-// as four m8n8k16 (exact int32 sums from the same C, so the same bits).
+// sm_75 has ldmatrix and m8n8k16: the same tile, with registers in place of cp.async and four m8n8k16 per m16n8k32.
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750 && __CUDA_ARCH__ < 800
 #define STRATA_W4A8_SM75 1
 #else
@@ -116,18 +114,20 @@ __device__ __forceinline__ void ldsm4(uint32_t& r0, uint32_t& r1, uint32_t& r2, 
 __device__ __forceinline__ void lds128(float4& v, uint32_t addr) {
     asm volatile("ld.shared.v4.f32 {%0, %1, %2, %3}, [%4];\n" : "=f"(v.x), "=f"(v.y), "=f"(v.z), "=f"(v.w) : "r"(addr));
 }
+#if STRATA_W4A8_SM75
+__device__ __forceinline__ void mma_m8n8k16_s8(int& c0, int& c1, uint32_t a, uint32_t b) {
+    asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0, %1}, {%2}, {%3}, {%0, %1};\n"
+        : "+r"(c0), "+r"(c1) : "r"(a), "r"(b));
+}
+#endif
 template <uint32_t C0>
 __device__ __forceinline__ void mma_s8(int (&c)[4], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
 #if STRATA_W4A8_SM75
-    // m16n8k32 = rows g (a0: k 0..15, a2: k 16..31) and rows g + 8 (a1, a3) against b0 (k 0..15) and b1 (k 16..31)
-    asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0, %1}, {%2}, {%3}, {%4, %4};\n"
-        : "=r"(c[0]), "=r"(c[1]) : "r"(a[0]), "r"(b0), "r"(C0));
-    asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0, %1}, {%2}, {%3}, {%0, %1};\n"
-        : "+r"(c[0]), "+r"(c[1]) : "r"(a[2]), "r"(b1));
-    asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0, %1}, {%2}, {%3}, {%4, %4};\n"
-        : "=r"(c[2]), "=r"(c[3]) : "r"(a[1]), "r"(b0), "r"(C0));
-    asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0, %1}, {%2}, {%3}, {%0, %1};\n"
-        : "+r"(c[2]), "+r"(c[3]) : "r"(a[3]), "r"(b1));
+    c[0] = c[1] = c[2] = c[3] = (int) C0;
+    mma_m8n8k16_s8(c[0], c[1], a[0], b0);   // rows g, k 0..15
+    mma_m8n8k16_s8(c[0], c[1], a[2], b1);   // rows g, k 16..31
+    mma_m8n8k16_s8(c[2], c[3], a[1], b0);   // rows g + 8
+    mma_m8n8k16_s8(c[2], c[3], a[3], b1);
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
     c[0] = c[1] = c[2] = c[3] = 0;
     __trap();   // never launched below sm_80: arch_ok() declines those cards
@@ -173,15 +173,15 @@ __device__ __forceinline__ void tile(const char* __restrict__ w, const char* __r
     const char* my_row = w + (int64_t) (row0 + my_r) * row_bytes;
 
 #if STRATA_W4A8_SM75
-    // issue()'s pieces (below), read into registers: up to 5 weight pieces (p = my_p0 + 2j < 9) and 5 activation
-    // pieces (i = tid + 256j < NT * 72) per thread
+    // issue()'s pieces (below), through registers
     static_assert(C::STAGES == 2, "sm_75: this step's stage and the next one's");
-    uint2 wr[5];
-    uint4 yr[5];
+    constexpr int kWPieces = (9 + 1) / 2, kYPieces = (NT * 8 * 9 + kThreads - 1) / kThreads;   // per thread
+    uint2 wr[kWPieces];
+    uint4 yr[kYPieces];
     auto load = [&](int kb) {
         const char* rk = XS ? my_row + (int64_t) (kb >> 1) * 136 : my_row + (int64_t) kb * 72;
 #pragma unroll
-        for (int j = 0; j < 5; ++j) {
+        for (int j = 0; j < kWPieces; ++j) {
             const int p = my_p0 + 2 * j;
             if (p < 9) {
                 const char* src;
@@ -192,17 +192,17 @@ __device__ __forceinline__ void tile(const char* __restrict__ w, const char* __r
         }
         const char* yk = y + ((int64_t) kb * ncols_y + yrow0) * kYRow;
 #pragma unroll
-        for (int j = 0; j < 5; ++j)
+        for (int j = 0; j < kYPieces; ++j)
             if (tid + j * kThreads < NT * 8 * 9) yr[j] = *(const uint4*) (yk + (int64_t) (tid + j * kThreads) * 16);
     };
     auto store = [&](int st) {
         unsigned char* sw = smem + st * C::Stage;
         unsigned char* dw = sw + my_r * C::WROW;
 #pragma unroll
-        for (int j = 0; j < 5; ++j)
+        for (int j = 0; j < kWPieces; ++j)
             if (my_p0 + 2 * j < 9) *(uint2*) (dw + (my_p0 + 2 * j) * 8) = wr[j];
 #pragma unroll
-        for (int j = 0; j < 5; ++j)
+        for (int j = 0; j < kYPieces; ++j)
             if (tid + j * kThreads < NT * 8 * 9) *(uint4*) (sw + C::WStage + (tid + j * kThreads) * 16) = yr[j];
     };
 #else
@@ -246,9 +246,9 @@ __device__ __forceinline__ void tile(const char* __restrict__ w, const char* __r
 
     for (int kb = 0; kb < nk; ++kb) {
 #if STRATA_W4A8_SM75
-        __syncthreads();   // step kb's stage is stored; every warp is done with the stage step kb + 1 overwrites
-        const bool more = kb + 1 < nk;
-        if (more) load(kb + 1);
+        __syncthreads();   // step kb's stage is stored, and no warp still reads the one step kb + 1 overwrites
+        const bool has_next = kb + 1 < nk;
+        if (has_next) load(kb + 1);
 #else
         cp_wait<C::STAGES - 2>();
         __syncthreads();
@@ -386,7 +386,7 @@ __device__ __forceinline__ void tile(const char* __restrict__ w, const char* __r
         }
         }
 #if STRATA_W4A8_SM75
-        if (more) store((kb + 1) & 1);
+        if (has_next) store((kb + 1) % C::STAGES);
 #endif
     }
 #if !STRATA_W4A8_SM75
