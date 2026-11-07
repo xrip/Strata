@@ -172,28 +172,25 @@ __device__ __forceinline__ void tile(const char* __restrict__ w, const char* __r
     const int my_r = tid & (kBM - 1), my_p0 = tid >> 7;
     const char* my_row = w + (int64_t) (row0 + my_r) * row_bytes;
 
-    // weights: 128 rows x 9 pieces of 8 bytes (IQ4_XS: the super-block's 8-byte header + this half's 64 qs
-    // bytes; IQ4_NL: 4 blocks of 18 bytes)
-    // (thread tid copies pieces tid/128, +2, +4, ... of row tid % 128)
-    auto wpiece = [&](int kb, int p) -> const char* {
-        const char* rk = XS ? my_row + (int64_t) (kb >> 1) * 136 : my_row + (int64_t) kb * 72;
-        if constexpr (XS) return p == 0 ? rk : rk + 8 + (kb & 1) * 64 + (p - 1) * 8;
-        else return rk + p * 8;
-    };
-    // activations: the tile's rows are consecutive in each 128-value block of the q8_1 array
-    auto ystep = [&](int kb) { return y + ((int64_t) kb * ncols_y + yrow0) * kYRow; };
-
 #if STRATA_W4A8_SM75
-    // the next step's pieces in registers: up to 5 weight pieces (p = my_p0 + 2j < 9) and 5 activation pieces
-    // (i = tid + 256j < NT * 72) per thread
+    // issue()'s pieces (below), read into registers: up to 5 weight pieces (p = my_p0 + 2j < 9) and 5 activation
+    // pieces (i = tid + 256j < NT * 72) per thread
     static_assert(C::STAGES == 2, "sm_75: this step's stage and the next one's");
     uint2 wr[5];
     uint4 yr[5];
     auto load = [&](int kb) {
+        const char* rk = XS ? my_row + (int64_t) (kb >> 1) * 136 : my_row + (int64_t) kb * 72;
 #pragma unroll
-        for (int j = 0; j < 5; ++j)
-            if (my_p0 + 2 * j < 9) wr[j] = *(const uint2*) wpiece(kb, my_p0 + 2 * j);
-        const char* yk = ystep(kb);
+        for (int j = 0; j < 5; ++j) {
+            const int p = my_p0 + 2 * j;
+            if (p < 9) {
+                const char* src;
+                if constexpr (XS) src = p == 0 ? rk : rk + 8 + (kb & 1) * 64 + (p - 1) * 8;
+                else src = rk + p * 8;
+                wr[j] = *(const uint2*) src;
+            }
+        }
+        const char* yk = y + ((int64_t) kb * ncols_y + yrow0) * kYRow;
 #pragma unroll
         for (int j = 0; j < 5; ++j)
             if (tid + j * kThreads < NT * 8 * 9) yr[j] = *(const uint4*) (yk + (int64_t) (tid + j * kThreads) * 16);
@@ -211,10 +208,20 @@ __device__ __forceinline__ void tile(const char* __restrict__ w, const char* __r
 #else
     auto issue = [&](int kb, int st) {
         const uint32_t sw = s0 + st * C::Stage, sy = sw + C::WStage;
+        // weights: 128 rows x 9 pieces of 8 bytes (IQ4_XS: the super-block's 8-byte header + this half's 64 qs
+        // bytes; IQ4_NL: 4 blocks of 18 bytes)
+        // (thread tid copies pieces tid/128, +2, +4, ... of row tid % 128)
         const uint32_t dw = sw + my_r * C::WROW;
+        const char* rk = XS ? my_row + (int64_t) (kb >> 1) * 136 : my_row + (int64_t) kb * 72;
 #pragma unroll
-        for (int p = my_p0; p < 9; p += 2) cp8(dw + p * 8, wpiece(kb, p));
-        const char* yk = ystep(kb);
+        for (int p = my_p0; p < 9; p += 2) {
+            const char* src;
+            if constexpr (XS) src = p == 0 ? rk : rk + 8 + (kb & 1) * 64 + (p - 1) * 8;
+            else src = rk + p * 8;
+            cp8(dw + p * 8, src);
+        }
+        // activations: the tile's rows are consecutive in each 128-value block of the q8_1 array
+        const char* yk = y + ((int64_t) kb * ncols_y + yrow0) * kYRow;
 #pragma unroll
         for (int i = tid; i < NT * 8 * 9; i += kThreads) cp16(sy + i * 16, yk + (int64_t) i * 16);
     };
