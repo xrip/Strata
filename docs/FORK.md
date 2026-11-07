@@ -134,8 +134,9 @@ and `arch_ok()` takes 7.5. The model here has IQ4_NL down products in 39 of 48 l
   +23..+31 % (config 0; configs 1-3 slower). 255 registers, 12-36 bytes of spill a thread.
 - Engine: prompt reads ~2 % faster, decode not on this path (the table "Measured 2026-11-07"); 20,288 products ran,
   128 stayed on MMQ (launches MMQ would split along K). The exactness gate: the same answers.
-Code: the `STRATA_W4A8_SM75` blocks in `src/prefill/moe_iq4_w4a8.cu`; the test's arch check. Upstream PR: see the
-commit `prefill: STRATA_IQ4_W4A8 on sm_75`.
+Code: the `STRATA_W4A8_SM75` blocks in `src/prefill/moe_iq4_w4a8.cu`; the test's arch check. The sm_80+ source is
+upstream's word for word: sm_86 and sm_120 SASS of all 8 kernels identical to 0.2.12's. Upstream PR #5498 (branch
+`pr/iq4-w4a8-sm75`); drop the patch here when it is merged.
 
 ## Settings for this box
 
