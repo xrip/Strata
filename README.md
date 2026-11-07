@@ -7,8 +7,8 @@
 
 ## This fork: Strata on 2x CMP 50HX
 
-[xrip/Strata](https://github.com/xrip/Strata) is [Niko1221/Strata](https://github.com/Niko1221/Strata) with three patches
-(parked conversations on a disk; the tensor-core GDN scan on sm_75; 5-8 row decode windows on the interleaved kernels (#5137) - the tool search patch is upstream's since 0.2.10) and the settings measured fastest on one box: 2x Xeon E5-2670 v2 (AVX only, 2 NUMA
+[xrip/Strata](https://github.com/xrip/Strata) is [Niko1221/Strata](https://github.com/Niko1221/Strata) with four patches
+(parked conversations on a disk; the tensor-core GDN scan on sm_75; 5-8 row decode windows on the interleaved kernels (#5137); upstream's int8 IQ4 prompt kernel on sm_75 - the tool search patch is upstream's since 0.2.10) and the settings measured fastest on one box: 2x Xeon E5-2670 v2 (AVX only, 2 NUMA
 nodes), 80 GB DDR3-1866, 2x CMP 50HX (Turing sm_75, 20 GB) on a layer split over PCIe 2.0 x16, a third CMP 50HX
 (10 GB, PCIe x1) for pictures. The model: [Swift 1.5 Qwen3.8-Flash-Next GSQ-RCO IQ3_S](https://huggingface.co/ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
 with an FP8 per-layer token table made from Qwen's FP8 checkpoint (`tools/ple_fp8_pack.py`) in place of the GGUF's
@@ -25,7 +25,8 @@ and a 172K prompt read cold, then 6 x 512 tokens of decode at ~8K context; range
 | **Live config faster than stock** | **+56 %** (36 % less time) | **+90 %** (47 % less time) | **+14 %** | 13 % less |
 
 The longer the prompt, the bigger the gain: a 172K prompt that takes stock Strata 2 min 8 s is read here in 1 min 7 s.
-Both arms keep the same model and capacity
+Since 2026-11-07 the fork is on 0.2.12 with `STRATA_IQ4_W4A8=2` on top: prompt reads another ~2 % faster than 0.2.12
+without it, the same answers (its row below). Both arms keep the same model and capacity
 settings (393K context with YaRN, MTP drafts, int8 KV, the conversation cache, pictures on the third card); upstream's
 server sets `STRATA_GDN_TC=1`, which leaves sm_75 on the old scan. Decode of one config moves ~2 % from start to start
 here (where the expert memory lands in RAM). The table of 2026-10-28 (engine 0.2.7, the original IQ3_XXS) is in
@@ -41,7 +42,7 @@ The config (`strata-swift-iq3_s-fp8ple.json`):
         "STRATA_SPLIT_MTP_BATCH": "1", "STRATA_PREFILL_LAYER_MAJOR": "0", "STRATA_GDN_TC": "2",
         "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_ROUTE_PRIOR": "0", "STRATA_PCIE_AUTO_SPLIT": "0",
         "STRATA_PF_GROUP_SCRATCH": "1", "STRATA_PF_HC_REGION": "1", "STRATA_KV_PREFETCH": "1",
-        "STRATA_PREFILL_ROUTED_STREAM": "1", "STRATA_MTP_ROOM_MIN": "16384"},
+        "STRATA_PREFILL_ROUTED_STREAM": "1", "STRATA_MTP_ROOM_MIN": "16384", "STRATA_IQ4_W4A8": "2"},
 "args": ["--pack", ".../packs/swift-iq3_s", "--native", ".../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
          "--ple-gguf", ".../ple/ple-fp8.gguf", "--expert-profile", ".../data/expert-profile.bin",
          "--pool-workers", "19", "--expert-cache", "auto", "--prefill", "auto:16384",
@@ -72,6 +73,7 @@ them together):
 | `STRATA_ROUTE_TAIL_SKIP=0`, `STRATA_ROUTE_PRIOR=0` | the model's own routing, so the answers stay exact | the tail skip gave no speed here |
 | `--prefill auto:16384`, `STRATA_PREFILL_CPU_SHARE_MAX=16384` | 16,384-token prompt chunks (a bare `auto` keeps 8,192 on a layer split; upstream raises it to 32,768 only on cc 8.0+ single cards); the CPU share follows them up to 16,384 | 64K cold read 34.59 -> 30.21 s (-12.7 %), 172K 87.93 -> 70.40 s (-19.9 %), decode same within noise (2026-11-05); `auto:32768` and `auto:20480` leave an 8-slot ring here and are slower. Like any chunk size change, not bit-exact against 8K (upstream's 0.2.11 notes: near-tie block choices) |
 | `STRATA_PF_GROUP_SCRATCH=1`, `STRATA_PF_HC_REGION=1`, `STRATA_KV_PREFETCH=1`, `STRATA_PREFILL_ROUTED_STREAM=1`, `STRATA_MTP_ROOM_MIN=16384` (the prompt switches) | upstream opt-ins, all on in the [Speedy](https://github.com/DevDock-AI/Speedy) fork: prompt buffers that hold one expert group, the hyper-connection scratch in the shared region, the next layer's KV upload beside the compute, no copy of an expert no token routes to, the draft layer's experts lent to the prompt ring on reads of 16K+ | 64K read 30.04 -> 29.20 s (-2.8 %), 172K 70.10 -> 67.35 s (-3.9 %), decode the same (2026-11-05); the same greedy answers (2K / 20K / 70K prompts, CPU share fixed, swaps off) |
+| `STRATA_IQ4_W4A8=2` (the fifth patch) | the prompt's IQ4_NL expert down products (39 of the 48 layers) on upstream's pipelined int8 kernel instead of MMQ; the patch makes it run on sm_75 (upstream: sm_80+) | kernel: down products +46..+59 % against MMQ; 64K read 29.81 -> 29.19 s (-2.1 %), 172K 68.91 -> 67.61 s (-1.9 %), decode not on this path (2026-11-07, 0.2.12, L N W W N L); MMQ's bits, the same greedy answers |
 | `STRATA_PCIE_AUTO_SPLIT=0` | keeps the CPU/PCIe miss share of a layer split at the probe's 0.17; 0.2.11 refines it from the CPU pool (0.25-0.30 here) | 0.2.11's rule: decode 84.4 -> 83.3 tok/s, -1.3 % (2026-11-05, Swift IQ3_S) |
 | `"gpu": [0, 1]`, `--layer-split auto` | the two x16 cards share the layers; the x1 card is left out (upstream's setup offers it as a helper) | a helper cache on the x1 card: decode 34-108 % slower (2026-10-18) |
 | `--max-context 393216`, `--rope-scaling yarn --rope-scale 1.5 --yarn-orig-ctx 262144` | a 393,216-token context: YaRN stretches the model's trained 262,144 positions 1.5x (setup writes the same for this length) | not measured here; upstream's run (RTX 5080, IQ3_S, YaRN factor 2): at 293K tokens the loss 2.22 -> 2.04 nats a token against no scaling (docs/DETAILS.md) |

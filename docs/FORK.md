@@ -1,14 +1,26 @@
 # xrip/Strata: upstream Strata for a box with 2x CMP 50HX
 
-This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with three patches (the disk tier, the third one, the
-GDN scan on sm_75, and the fourth, 5-8 row decode windows on the interleaved kernels; the second, tool search, is upstream's since
-0.2.10), and the settings measured fastest on
+This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with four patches (the disk tier, the third one, the
+GDN scan on sm_75, the fourth, 5-8 row decode windows on the interleaved kernels, and the fifth, upstream's int8 IQ4
+prompt kernel on sm_75; the second, tool search, is upstream's since 0.2.10), and the settings measured fastest on
 one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Swift 1.5 Qwen3.8-Flash-Next IQ3_S
 with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until 2026-11-04).
 
-Base: upstream 0.2.11 (`9f7d977d`, engine 0.1.57, merged, measured and deployed on the box 2026-11-05).
-On this box's path 0.2.11 brings: a CUDA layer split refines its CPU/PCIe miss share from the CPU pool's speed
+Base: upstream 0.2.12 (`146df3c4`, engine 0.1.58, merged, measured and deployed on the box 2026-11-07; 95 commits,
+no conflicts). On this box's path: fixes only by default (the prompt MMQ row tables get the stream-k fixup's over-read
+margin - the Xid 31 "prefill copy_i32: an illegal memory access" on long prompts on a CUDA layer split, #1468; the copy
+stream's flag B stays behind queued copies; the PLE reader folds a decode step's rows without a hash table) and three
+opt-ins. `STRATA_IQ4_W4A8` (an int8 kernel for the prompt's IQ4 expert products, sm_80+) is ported to sm_75 as the
+fifth patch and on here. Not taken: `STRATA_SELECT_TWO_PASS` (sm_80+: a single-pass TF32 QSA block scorer with an
+error bound, 3xTF32 again only near the top-k cut-off; sm_75 has no TF32, so a port needs an FP16 first pass and a new
+bound against the exact FP32 thread scorer; that scorer was 5.6 % of GPU 0's kernel time in a 2.6 s nsys sample of a
+140K read on 2026-10-08, so likely 2 % or less of a 172K read), `STRATA_ADAPT_FETCH` (the PCIe share's fetched experts become resident; upstream +5-10 %
+decode on one card, but the engine turns it off on a layer split, and it changes which experts the CPU computes, so
+answers can change). 0.2.12 against 0.2.11 with the live config: 64K read +0.7 %, 172K +0.4 %, decode -1.2 %, all
+within noise (the table "Measured 2026-11-07"). Server: 1,494 tests pass on the box; tool-call parser fixes (#5409,
+#5276, #5281), Anthropic tool results in call order (#4832). Base before: upstream 0.2.11 (`9f7d977d`, engine 0.1.57,
+2026-11-05). On this box's path 0.2.11 brings: a CUDA layer split refines its CPU/PCIe miss share from the CPU pool's speed
 (`STRATA_PCIE_AUTO_SPLIT`, on by default on a discrete card; here the share went 0.17 -> 0.25-0.30, the pool measured
 15.8-16.2 GB/s of expert bytes); a later stage keeps 256 MiB free for what it allocates after its cache (CUDA1: 6,389 ->
 6,267 expert slots, 346 -> 602 MiB free, no LOW warning); and ~15 server fixes (an engine is ended only where the
@@ -108,6 +120,23 @@ and faster per launch; it matters where windows are wider. Code: `Q81Il` (`PLANE
 `il_pm_at` and `kIlRows58_75` in `src/kernels/cuda/native_mmvq.cu`. Tried and dropped: planes for the block-major copy
 (Q6_K 6144x2560 5 columns 52 -> 74 us), Q6_K 5 columns as 6 (11-62 % slower).
 
+## The fifth patch: upstream's IQ4 W4A8 prompt kernel on sm_75 (`STRATA_IQ4_W4A8=2`)
+
+0.2.12's opt-in `moe_iq4_w4a8.cu` (from upstream PR #4871) computes the prompt's IQ4_XS / IQ4_NL expert products with
+MMQ's sums in another schedule: 128 weight rows a CTA, the 4-bit weights turned into int8 in registers, 128-value K
+steps through a cp.async pipeline. It needs cp.async and the m16n8k32 s8 MMA (sm_80); sm_75 has ldmatrix and the
+m8n8k16 s8 MMA. The patch: on sm_75 the next K step's pieces are loaded into registers before this step's MMAs and
+stored to the other shared-memory stage after them, each m16n8k32 is four m8n8k16 from the same C (exact int32 sums),
+and `arch_ok()` takes 7.5. The model here has IQ4_NL down products in 39 of 48 layers (2560 x 640, K = 640), so `=2`
+(the IQ4_NL products only; one layer's IQ4_XS gate/up is left on MMQ).
+- `prefill_iq4_w4a8_test` on GPU 0: all identical against MMQ (default, `--full`, `--tokens 97 / 2049 / 8191`,
+  `--wide`; three routings each). `--full --bench`, MMQ time over the kernel's: IQ4_NL down +46..+59 %, IQ4_XS gate/up
+  +23..+31 % (config 0; configs 1-3 slower). 255 registers, 12-36 bytes of spill a thread.
+- Engine: prompt reads ~2 % faster, decode not on this path (the table "Measured 2026-11-07"); 20,288 products ran,
+  128 stayed on MMQ (launches MMQ would split along K). The exactness gate: the same answers.
+Code: the `STRATA_W4A8_SM75` blocks in `src/prefill/moe_iq4_w4a8.cu`; the test's arch check. Upstream PR: see the
+commit `prefill: STRATA_IQ4_W4A8 on sm_75`.
+
 ## Settings for this box
 
 Build: `-DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_ISA_FLOOR=avx` (the released engines need AVX2:
@@ -166,6 +195,23 @@ case. Not kept: nothing measurable in the engine, and the patch would have to re
 |---|---:|---:|---:|
 | F: live | 30.20 / 30.18 s | 70.21 / 70.30 s | 84.7 / 84.0 tok/s |
 | T: + the sign patch | 30.17 / 30.43 s | 70.37 / 70.49 s | 84.1 / 84.8 tok/s |
+
+## Measured 2026-11-07 (the 0.2.12 sync and the fifth patch; `~/opt-avx1/w4a8/win_0212.sh`)
+
+`chunk.sh L N W W N L` as below (two starts an arm, interleaved; the live config, vision on GPU 2): L = the live
+build (0.2.11), N = 0.2.12, W = 0.2.12 + the fifth patch with `STRATA_IQ4_W4A8=2`. The share of the arena in node 0's
+one-channel part: 26-32 % in every start.
+
+| Arm | 64K read | 172K read | decode at 8K |
+|---|---:|---:|---:|
+| L: 0.2.11 (live) | 29.27 / 29.93 s | 67.71 / 69.53 s | 82.0 / 82.2 tok/s |
+| N: 0.2.12 | 29.62 / 29.99 s | 68.56 / 69.25 s | 80.9 / 81.3 tok/s |
+| W: 0.2.12 + `STRATA_IQ4_W4A8=2` | 29.13 / 29.25 s (-2.1 %) | 67.41 / 67.81 s (-1.9 %) | 83.2 / 83.2 tok/s |
+
+Both W starts read faster than both N starts at both lengths. The kernel does not run in decode; W's decode against N
+(the same build options) is counted as noise between two binaries. The exactness gate (`gate_req.py`, CPU share 0,
+`--adapt-swaps 0`, `--pcie-frac 0.17`, 16K chunks): N against N (the control) and W against N give the same three
+200-token greedy answers after 2K / 20K / 70K prompts. The GDN check: `tc->tc PASS h=aea57e39` (as on 0.2.11).
 
 ## Measured 2026-11-05 (engine 0.2.11, Swift IQ3_S + FP8 PLE, vision on GPU 2 as live)
 
@@ -266,7 +312,9 @@ tested. Tools on the box: `~/opt-avx1/quick.sh` (this table), `perf.sh` (the idl
 `git fetch upstream && git merge upstream/main` on `main`; the patch lives in `conversation_disk.*`, a few blocks of
 `generate.cpp` (marked `--conversation-disk-dir`), `conversation_cache.hpp` (`set_on_evict`, `shared_tokens`, the 90 %
 rule) and the server's cache card. The fourth: `Q81Il` (`PLANES`) and `il_pm_at` (re-run `mmvq_il_parity` after a
-sync that touches `native_mmvq.cu`). The third patch: `gdn_tc.cuh`, `gdn_rec_tc` and `GDN_STACK_CUDA` (keep `"2"` when
+sync that touches `native_mmvq.cu`). The fifth: the `STRATA_W4A8_SM75` blocks of `moe_iq4_w4a8.cu` (after a sync that
+touches that file, `CUDA_VISIBLE_DEVICES=0 prefill_iq4_w4a8_test --full` must say "all identical" on sm_75, not
+"skipped"; drop the patch if upstream takes the PR). The third patch: `gdn_tc.cuh`, `gdn_rec_tc` and `GDN_STACK_CUDA` (keep `"2"` when
 upstream changes that line). After every sync, on GPU 0 with Strata stopped (the x1 card runs other work now):
 `CUDA_VISIBLE_DEVICES=0 STRATA_GDN_TC=2 gdn_harness
 --T 5000 --chunk 2500 --cuts 37 --paths auto,pipe --ref-heads 0,17,47` must show `tc->tc` and PASS on the `auto` line
