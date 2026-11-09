@@ -95,9 +95,10 @@ products; `gdn_harness` against its FP64 reference PASS, 10 stress cases). One l
 11.19 -> 5.12 ms at 8,192 tokens, 2.77 -> 1.28 at 2,048, 0.39 -> 0.21 at 300. Live since 2026-10-31: prompt reads of
 4-46K new tokens after a cached 10K start 6.0 % +- 5.6 % faster than on 0.2.8 (6 reads against 28; 0.2.9 and this
 together). Code: `src/prefill/gdn_tc.cuh` (`ONE`), `gdn_rec_tc` in `src/prefill/kernels.cu`. Upstream PR #4876.
-On by default here: the fork's server sets `STRATA_GDN_TC=2` where upstream's sets `=1` (`GDN_STACK_CUDA` in
-`serve/server.py`, checked by `serve/test_parallel.py`), and the box's configs set it too. The engine says nothing
-when it falls back to the old kernel, so check it after every sync (below).
+On here because the box's configs set `STRATA_GDN_TC=2`. Without it the engine sets `=1` by itself on Linux CUDA
+(since 0.2.13, `apply_gdn_defaults_cuda`; before that upstream's server did, and the fork's server set `=2`), and `=1`
+leaves sm_75 on the old kernel. The engine says nothing when it falls back to the old kernel, so check it after every
+sync (below).
 
 ## The fourth patch: 5-8 row windows on the interleaved kernels (decode, bitwise; upstream PR #5137)
 
@@ -315,10 +316,10 @@ tested. Tools on the box: `~/opt-avx1/quick.sh` (this table), `perf.sh` (the idl
 rule) and the server's cache card. The fourth: `Q81Il` (`PLANES`) and `il_pm_at` (re-run `mmvq_il_parity` after a
 sync that touches `native_mmvq.cu`). The fifth: the `STRATA_W4A8_SM75` blocks of `moe_iq4_w4a8.cu` (after a sync that
 touches that file, `CUDA_VISIBLE_DEVICES=0 prefill_iq4_w4a8_test --full` must say "all identical" on sm_75, not
-"skipped"; drop the patch if upstream takes the PR). The third patch: `gdn_tc.cuh`, `gdn_rec_tc` and `GDN_STACK_CUDA` (keep `"2"` when
-upstream changes that line). After every sync, on GPU 0 with Strata stopped (the x1 card runs other work now):
+"skipped"; drop the patch if upstream takes the PR). The third patch: `gdn_tc.cuh` and `gdn_rec_tc`; every config keeps
+`"STRATA_GDN_TC": "2"`. After every sync, on GPU 0 with Strata stopped (the x1 card runs other work now):
 `CUDA_VISIBLE_DEVICES=0 STRATA_GDN_TC=2 gdn_harness
 --T 5000 --chunk 2500 --cuts 37 --paths auto,pipe --ref-heads 0,17,47` must show `tc->tc` and PASS on the `auto` line
-(`tc->pipe` means the sm_75 scan is off), and `python -m pytest serve/test_parallel.py -k GdnStack` must pass. Skip the
+(`tc->pipe` means the sm_75 scan is off). Skip the
 speed test when nothing on this box's path changed (DeepSeek, AVX2/AVX-512 kernels, one-GPU features); otherwise
 `quick.sh` against the deployed build.
