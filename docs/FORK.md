@@ -7,7 +7,15 @@ one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB D
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Swift 1.5 Qwen3.8-Flash-Next IQ3_S
 with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until 2026-11-04).
 
-Base: upstream 0.2.12 (`146df3c4`, engine 0.1.58, merged, measured and deployed on the box 2026-11-07; 95 commits,
+Base: upstream 0.2.13 (`37d5c9e8`, engine 0.1.59, merged 2026-11-09; 213 commits, 3 conflicts: the CUDA GDN defaults
+moved from the server into the engine, and CMakeLists.txt is split by backend). Nothing on this box's path that changes
+speed, so no speed A/B: the model shape is a build-time header now (`kCompiledGeometry`; upstream: the same SASS for the
+default shape); ggml builds from the vendored `third_party/strata-ggml` (its sources are byte for byte the llama.cpp
+checkout of the 0.2.12 build, only two CMake files differ); the engine sets `STRATA_GDN_TC=1` and `STRATA_GDN_CONVL2=2`
+itself (the configs keep `=2`); `STRATA_HC_Q8` turns on only for a file with Q8_0 hyper-connection projections (ours are
+BF16); the PLE hash constants come from the model file (ours carries the built-in values). Not on this path: DFlash2
+per-card defaults (Blackwell, Strix Halo), the gfx12 chunked GDN default, Metal and SYCL work, models of other shapes.
+Base before: upstream 0.2.12 (`146df3c4`, engine 0.1.58, merged, measured and deployed on the box 2026-11-07; 95 commits,
 no conflicts). On this box's path: fixes only by default (the prompt MMQ row tables get the stream-k fixup's over-read
 margin - the Xid 31 "prefill copy_i32: an illegal memory access" on long prompts on a CUDA layer split, #1468; the copy
 stream's flag B stays behind queued copies; the PLE reader folds a decode step's rows without a hash table) and three
