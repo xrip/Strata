@@ -15,6 +15,10 @@ checkout of the 0.2.12 build, only two CMake files differ); the engine sets `STR
 itself (the configs keep `=2`); `STRATA_HC_Q8` turns on only for a file with Q8_0 hyper-connection projections (ours are
 BF16); the PLE hash constants come from the model file (ours carries the built-in values). Not on this path: DFlash2
 per-card defaults (Blackwell, Strix Halo), the gfx12 chunked GDN default, Metal and SYCL work, models of other shapes.
+On the box since 2026-11-09: sm_75 SASS the same as 0.2.12's (3571 of 3571 kernels). Then 0.2.13.1 (merged 2026-11-10,
+69 commits, no conflicts): a Control-only fix (the app on an Intel Arc card), app, packaging and SYCL `--geometry` work;
+the engine tree changes only its version (0.1.59.1), so the box keeps the 0.1.59 engine - a rebuild would only rename
+it, and the conversation disk would refuse its saved files again.
 Base before: upstream 0.2.12 (`146df3c4`, engine 0.1.58, merged, measured and deployed on the box 2026-11-07; 95 commits,
 no conflicts). On this box's path: fixes only by default (the prompt MMQ row tables get the stream-k fixup's over-read
 margin - the Xid 31 "prefill copy_i32: an illegal memory access" on long prompts on a CUDA layer split, #1468; the copy
