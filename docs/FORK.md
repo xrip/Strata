@@ -22,7 +22,13 @@ conflicts with the conversation disk tier): no CUDA code; the conversation cache
 when it evicts (#5697 - the fork's `make_ram` already did, now through upstream's `release_free_heap`), the stall report
 also asks the prompt path's stream, a split stage's prompt loan is priced on its own card (no change for two like
 cards). Built 2026-11-11 with sm_75 SASS the same as the live 0.1.59's (3573 of 3573 kernels), 1543 server tests pass;
-on the box from that day. The version change (0.1.59.1) made the conversation disk refuse its saved files once.
+on the box from that day. The version change (0.1.59.1) made the conversation disk refuse its saved files once. Then
+upstream main of the evening of 2026-11-11 (23 commits, merged 2026-11-12, 1 conflict: the request line keeps the fork's
+`reused_from`): the #4677 stop bound (the rows a decode window commits end at `max_new` and the first EOS) is on for CUDA
+too; it changes no emitted token. The live 0.1.59.1 log had 403 of 775 parked conversations with 1-4 rows (once 69)
+past what the client got; 3 next turns went back inside the answer (925 tokens). The rest is not on this path (the
+Qwen3.6 engine, HIP, DeepSeek, AMD GPU pause lines, Arm picture reader, app). Version stays 0.1.59.1, so the conversation
+disk keeps its files; built 2026-11-12 with sm_75 SASS the same as the live engine's (3573 of 3573 kernels), 1567 server tests pass.
 Base before: upstream 0.2.12 (`146df3c4`, engine 0.1.58, merged, measured and deployed on the box 2026-11-07; 95 commits,
 no conflicts). On this box's path: fixes only by default (the prompt MMQ row tables get the stream-k fixup's over-read
 margin - the Xid 31 "prefill copy_i32: an illegal memory access" on long prompts on a CUDA layer split, #1468; the copy
