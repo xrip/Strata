@@ -247,8 +247,19 @@ prompt kernels, `STRATA_IQ4_W4A8` has no kernel there).
 | O: 0.1.60.1 without MMQ | 29.42 / 29.71 s (+3.0 %) | 89.9 / 88.6 tok/s | 7,056 / - |
 
 The GDN check: `tc->tc PASS h=aea57e39`; `prefill_iq4_w4a8_test` "all identical" on sm_75; `mmvq_il_parity` OK.
-Not measured: reads of short chunks (an agent's next turn) on O; in the kernel test the first pair timed (IQ2_S, 2K
-and 3.5K tokens) ran 4-7x slower than the others, likely the idle governor (that test ran outside `perf.sh`).
+One layer, fused against MMQ (MMQ build, `STRATA_PF_FUSED_SM75=1 prefill_fused_iq_test --turing` in `perf.sh`, GPU 0;
+`~/opt-avx1/t75_0216.sh`; outside `perf.sh` the first pair timed ran 4-7x slower: the idle governor):
+
+| pair | 2,048 tokens | 3,584 | 8,192 |
+|---|---:|---:|---:|
+| IQ2_S / Q2_0 | 17.4 -> 11.5 ms (1.51x) | 22.6 -> 17.3 (1.30x) | 44.5 -> 32.0 (1.39x) |
+| IQ2_XXS / Q2_0 | 14.5 -> 8.5 (1.70x) | 19.9 -> 15.6 (1.27x) | 38.1 -> 28.6 (1.33x) |
+| IQ3_S / IQ4_NL | 18.0 -> 11.2 (1.60x) | 22.9 -> 18.1 (1.27x) | 41.1 -> 33.8 (1.22x) |
+| IQ3_XXS / IQ4_NL | 17.2 -> 10.4 (1.65x) | 22.1 -> 18.1 (1.22x) | 39.4 -> 32.8 (1.20x) |
+
+The faster layers do not show in the engine: the cards hold ~30 % of the experts and a 16K chunk routes to nearly all
+of them, so a read waits on expert copies over PCIe 2.0 and the CPU share. Why O is 3.5 % slower is not known (no
+profile). Not measured: short chunks (an agent's next turn) in the engine. Reported on upstream PR #5498 (2026-11-16).
 
 ## Measured 2026-11-07 (the 0.2.12 sync and the fifth patch; `~/opt-avx1/w4a8/win_0212.sh`)
 
