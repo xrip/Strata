@@ -7,7 +7,21 @@ one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB D
 a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Swift 1.5 Qwen3.8-Flash-Next IQ3_S
 with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until 2026-11-04).
 
-Base: upstream 0.2.13 (`37d5c9e8`, engine 0.1.59, merged 2026-11-09; 213 commits, 3 conflicts: the CUDA GDN defaults
+Base: upstream main of 2026-11-15 (`baf16363`, 0.2.14.1, engine 0.1.60.1; merged 2026-11-16, 742 commits, 2 conflicts
+in the disk tier: upstream's new park segment pool gives its idle RAM back first, in the fork's `make_ram` too). On
+this box's path: a layer split keeps on each card only the dense weights of its own layers (`--trim-stage-weights`,
+on by default; from Strata-DualGPU): expert cache 6,240 -> 7,041 slots on CUDA0 and 7,748 -> 8,700 on CUDA1, decode at
+8K +8.1 %; the prompt's new K/V cells go to the host copy by DMA (`STRATA_KV_HOST_DMA`, on by default on CUDA); the park
+pools are on by default; a decode window that ends after the server's STOP is dropped (the next turn continues from
+it); the engine pins itself to the card's NUMA node only when the pool fits there (19 workers do not: no change here).
+**Upstream builds without llama.cpp's MMQ by default now; this box builds with `-DSTRATA_MMQ=ON`.** The no-MMQ build
+runs all 48 layers of Swift IQ3_S on the new fused Turing kernels (IQ2_S / IQ3_S / IQ3_XXS / IQ4_XS gate/up with an
+IQ4_NL or Q2_0 down): parity passes on the CMP 50HX (`prefill_fused_iq_test --turing --edge`), but the 64K read is
+3.5 % slower than MMQ + the fifth patch (the table "Measured 2026-11-16"), and the fifth patch is in the MMQ library
+only. sm_75 SASS of the MMQ build against 0.1.59.1: 3,562 of 3,573 kernels the same (the rest: MMQ's gate/up scale,
+the hyper-connection norm, interleaved decode kernels of Q4_K / Q5_K / IQ4_XS, all checked by `mmvq_il_parity`), 238
+new. 1,515 server tests pass. The version change (0.1.60.1) makes the conversation disk refuse its saved files once.
+Base before: upstream 0.2.13 (`37d5c9e8`, engine 0.1.59, merged 2026-11-09; 213 commits, 3 conflicts: the CUDA GDN defaults
 moved from the server into the engine, and CMakeLists.txt is split by backend). Nothing on this box's path that changes
 speed, so no speed A/B: the model shape is a build-time header now (`kCompiledGeometry`; upstream: the same SASS for the
 default shape); ggml builds from the vendored `third_party/strata-ggml` (its sources are byte for byte the llama.cpp
@@ -220,6 +234,22 @@ case. Not kept: nothing measurable in the engine, and the patch would have to re
 | F: live | 30.20 / 30.18 s | 70.21 / 70.30 s | 84.7 / 84.0 tok/s |
 | T: + the sign patch | 30.17 / 30.43 s | 70.37 / 70.49 s | 84.1 / 84.8 tok/s |
 
+## Measured 2026-11-16 (the 0.2.14.1 sync; `~/opt-avx1/ab_0216.sh`, `quick.sh A M O O M A`, `mkcfg-0216.py`)
+
+The live config in every arm (16K chunks, `STRATA_IQ4_W4A8=2`), vision on GPU 2, inside `perf.sh`. A = the live
+0.1.59.1, M = 0.1.60.1 built with `-DSTRATA_MMQ=ON`, O = 0.1.60.1 as upstream builds it (no MMQ: the fused Turing
+prompt kernels, `STRATA_IQ4_W4A8` has no kernel there).
+
+| Arm | 64K read | decode at 8K | expert slots CUDA0 / CUDA1 |
+|---|---:|---:|---:|
+| A: 0.1.59.1 (live before) | 28.43 / 29.00 s | 82.5 / 82.6 tok/s | 6,240 / 7,748 |
+| **M: 0.1.60.1 with MMQ** (live now) | 28.35 / 28.78 s (-0.5 %) | 89.6 / 88.9 tok/s (**+8.1 %**) | 7,041 / 8,700 |
+| O: 0.1.60.1 without MMQ | 29.42 / 29.71 s (+3.0 %) | 89.9 / 88.6 tok/s | 7,056 / - |
+
+The GDN check: `tc->tc PASS h=aea57e39`; `prefill_iq4_w4a8_test` "all identical" on sm_75; `mmvq_il_parity` OK.
+Not measured: reads of short chunks (an agent's next turn) on O; in the kernel test the first pair timed (IQ2_S, 2K
+and 3.5K tokens) ran 4-7x slower than the others, likely the idle governor (that test ran outside `perf.sh`).
+
 ## Measured 2026-11-07 (the 0.2.12 sync and the fifth patch; `~/opt-avx1/w4a8/win_0212.sh`)
 
 `chunk.sh L N W W N L` as below (two starts an arm, interleaved; the live config, vision on GPU 2): L = the live
@@ -333,7 +363,8 @@ tested. Tools on the box: `~/opt-avx1/quick.sh` (this table), `perf.sh` (the idl
 
 ## Syncing
 
-`git fetch upstream && git merge upstream/main` on `main`; the patch lives in `conversation_disk.*`, a few blocks of
+`git fetch upstream && git merge upstream/main` on `main`. Build with `-DSTRATA_MMQ=ON` (upstream's default is OFF
+since 0.2.14; a new build folder without it has no MMQ and no fifth patch). The patch lives in `conversation_disk.*`, a few blocks of
 `generate.cpp` (marked `--conversation-disk-dir`), `conversation_cache.hpp` (`set_on_evict`, `shared_tokens`, the 90 %
 rule) and the server's cache card. The fourth: `Q81Il` (`PLANES`) and `il_pm_at` (re-run `mmvq_il_parity` after a
 sync that touches `native_mmvq.cu`). The fifth: the `STRATA_W4A8_SM75` blocks of `moe_iq4_w4a8.cu` (after a sync that

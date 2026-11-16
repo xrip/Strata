@@ -26,7 +26,9 @@ and a 172K prompt read cold, then 6 x 512 tokens of decode at ~8K context; range
 
 The longer the prompt, the bigger the gain: a 172K prompt that takes stock Strata 2 min 8 s is read here in 1 min 7 s.
 Since 2026-11-07 the fork is on 0.2.12 with `STRATA_IQ4_W4A8=2` on top: prompt reads another ~2 % faster than 0.2.12
-without it, the same answers (its row below). Both arms keep the same model and capacity
+without it, the same answers (its row below). Since 2026-11-16 it is on upstream 0.2.14.1 (engine 0.1.60.1, built
+with `-DSTRATA_MMQ=ON`): decode +8.1 % against 0.2.13 with the same config (each card keeps only its own layers' dense
+weights, ~12 % more expert slots), prompt reads the same (docs/FORK.md, "Measured 2026-11-16"). Both arms keep the same model and capacity
 settings (393K context with YaRN, MTP drafts, int8 KV, the conversation cache, pictures on the third card); stock
 upstream runs `STRATA_GDN_TC=1`, which leaves sm_75 on the old scan. Decode of one config moves ~2 % from start to start
 here (where the expert memory lands in RAM). The table of 2026-10-28 (engine 0.2.7, the original IQ3_XXS) is in
