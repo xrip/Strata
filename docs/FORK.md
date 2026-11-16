@@ -10,15 +10,13 @@ with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift
 Base: upstream main of 2026-11-15 (`baf16363`, 0.2.14.1, engine 0.1.60.1; merged 2026-11-16, 742 commits, 2 conflicts
 in the disk tier: upstream's new park segment pool gives its idle RAM back first, in the fork's `make_ram` too). On
 this box's path: a layer split keeps on each card only the dense weights of its own layers (`--trim-stage-weights`,
-on by default; from Strata-DualGPU): expert cache 6,240 -> 7,041 slots on CUDA0 and 7,748 -> 8,700 on CUDA1, decode at
-8K +8.1 %; the prompt's new K/V cells go to the host copy by DMA (`STRATA_KV_HOST_DMA`, on by default on CUDA); the park
-pools are on by default; a decode window that ends after the server's STOP is dropped (the next turn continues from
-it); the engine pins itself to the card's NUMA node only when the pool fits there (19 workers do not: no change here).
-**Upstream builds without llama.cpp's MMQ by default now; this box builds with `-DSTRATA_MMQ=ON`.** The no-MMQ build
-runs all 48 layers of Swift IQ3_S on the new fused Turing kernels (IQ2_S / IQ3_S / IQ3_XXS / IQ4_XS gate/up with an
-IQ4_NL or Q2_0 down): parity passes on the CMP 50HX (`prefill_fused_iq_test --turing --edge`), but the 64K read is
-3.5 % slower than MMQ + the fifth patch (the table "Measured 2026-11-16"), and the fifth patch is in the MMQ library
-only. sm_75 SASS of the MMQ build against 0.1.59.1: 3,562 of 3,573 kernels the same (the rest: MMQ's gate/up scale,
+on by default; from Strata-DualGPU): ~12 % more expert slots, faster decode; the prompt's new K/V cells go to the host
+copy by DMA (`STRATA_KV_HOST_DMA`, on by default on CUDA); the park pools are on by default; a decode window that ends
+after the server's STOP is dropped (the next turn continues from it); the engine pins itself to the card's NUMA node
+only when the pool fits there (19 workers do not: no change here). **Upstream builds without llama.cpp's MMQ by
+default now; this box builds with `-DSTRATA_MMQ=ON`:** the no-MMQ build runs all 48 layers of Swift IQ3_S on the new
+fused Turing kernels and reads slower here, and the fifth patch is in the MMQ library only (numbers: the table
+"Measured 2026-11-16"). sm_75 SASS of the MMQ build against 0.1.59.1: 3,562 of 3,573 kernels the same (the rest: MMQ's gate/up scale,
 the hyper-connection norm, interleaved decode kernels of Q4_K / Q5_K / IQ4_XS, all checked by `mmvq_il_parity`), 238
 new. 1,515 server tests pass. The version change (0.1.60.1) makes the conversation disk refuse its saved files once.
 Base before: upstream 0.2.13 (`37d5c9e8`, engine 0.1.59, merged 2026-11-09; 213 commits, 3 conflicts: the CUDA GDN defaults
