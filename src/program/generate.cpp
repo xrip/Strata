@@ -13187,7 +13187,7 @@ int main(int argc, char** argv) {
                                                             need, floor))
                     return true;
                 if (!trimmed) {
-                    if (pools_budget.idle_bytes() > 0) pools_budget.shrink((size_t) -1);
+                    pools_budget.shrink((size_t) -1);
                     strata::core::release_free_heap();
                     trimmed = true;
                     continue;
