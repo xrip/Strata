@@ -51,7 +51,7 @@ The engine is built from `engine/` (`-DSTRATA_ISA_FLOOR=avx`, `-DCMAKE_CUDA_ARCH
         "STRATA_PF_GROUP_SCRATCH": "1", "STRATA_PF_HC_REGION": "1", "STRATA_KV_PREFETCH": "1",
         "STRATA_PREFILL_ROUTED_STREAM": "1", "STRATA_MTP_ROOM_MIN": "16384", "STRATA_PREFILL_RING": "384"},
 "args": ["--pack", ".../packs/swift-iq3_s", "--native", ".../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
-         "--ple-gguf", ".../ple/ple-fp8.gguf", "--expert-profile", ".../data/expert-profile.bin",
+         "--ple-gguf", ".../ple/ple-fp8.gguf", "--expert-profile", ".../terminal/data/expert-profile.bin",
          "--pool-workers", "19", "--expert-cache", "auto", "--prefill", "auto:16384",
          "--spec", "4", "--spec-min-p", "0.5", "--mtp", ".../mtp/rt",
          "--max-context", "393216", "--rope-scaling", "yarn", "--rope-scale", "1.5", "--yarn-orig-ctx", "262144",
