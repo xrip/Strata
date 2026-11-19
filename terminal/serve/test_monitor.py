@@ -311,9 +311,8 @@ class ConversationCacheCard(unittest.TestCase):
         self.assertIn("# TYPE strata:conversation_cache_refused_total counter\n", text)
         self.assertEqual(text.count("# TYPE strata:conversation_cache_refused_total"), 1)
 
-    def test_the_disk_tier(self):
-        """--conversation-disk-dir: what is on the disk and how often it gave a conversation back; a conversation the
-        RAM budget sent to the disk counts as a park."""
+    def test_the_ssd_tier(self):
+        """The SSD tier's lines: what is on the disk and how often a conversation was read back from it."""
         from serve.server import ConvCacheLog
         import tempfile
         with tempfile.TemporaryDirectory() as d:
@@ -322,14 +321,12 @@ class ConversationCacheCard(unittest.TestCase):
             c = ConvCacheLog()
             self.assertIsNone(c.poll(str(log), 0)["on_disk"])
             log.write_text(
-                "strata serve: conversation disk: wrote 90000 tokens: 2778 MiB in 2 files, 4000 ms (728 MB/s); on disk 3, "
-                "9000 MiB; 0 removed for the budget, 0 expired\n"
-                "strata serve: conversation disk: disk hit: 90000 tokens, 2778 MiB in 2 files, 3600 ms (809 MB/s)\n"
-                "strata serve: conversation cache: sent to the disk 91000 tokens in 900.0 ms; parked=1 bytes=104857600 "
-                "evictions=0 snapshot_bytes=2913000000 reused_kv_bytes=0\n", encoding="utf-8")
+                "strata serve: conversation cache: spilled 90000 tokens to the SSD tier (evicted from RAM) in 4000.0 ms; on SSD 3, "
+                "9000 MiB\n"
+                "strata serve: conversation cache: read 90000 tokens back from the SSD tier in 3600.0 ms (this prompt starts with "
+                "89000 of them); on SSD 2, 6222 MiB\n", encoding="utf-8")
             st = c.poll(str(log), 0)
-            self.assertEqual((st["on_disk"], st["disk_mib"], st["disk_hits"]), (3, 9000, 1))
-            self.assertEqual((st["parks"], st["last_event"], st["last_tokens"]), (1, "sent to the disk", 91000))
+            self.assertEqual((st["on_disk"], st["disk_mib"], st["disk_hits"]), (2, 6222, 1))
 
     def test_metrics(self):
         tok = ByteTokenizer()

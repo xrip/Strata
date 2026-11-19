@@ -595,10 +595,10 @@ class ConvCacheLog:
     """#596: the engine's conversation cache as its log tells it (the engine writes "strata serve: conversation
     cache: parked N tokens ...; parked=P bytes=B evictions=E" and "restored N tokens ...; parked=P bytes=B" to stderr,
     which is the log): read on from where it was last read, from the start of the engine's current run."""
-    EVENT = re.compile(r"conversation cache: (parked|skipped|restored|sent to the disk) (\d+) tokens.*?parked=(\d+) "
-                       r"bytes=(\d+)(?: evictions=(\d+))?")
-    ON_DISK = re.compile(r"conversation disk: .*?on disk (\d+), (\d+) MiB")   # the disk tier (--conversation-disk-dir)
+    EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
+                       r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    ON_SSD = re.compile(r"conversation cache: .*?on SSD (\d+), (\d+) MiB")   # the SSD tier (conversation_spill.hpp)
     # #6081: a park the cache refused, by reason (the engine's "skip parking (...)" / "allocation failed" lines; a
     # "skipped N tokens" line is put()'s refusal).  The first match names the reason; any other text is the size
     # estimate's own error ("estimate").
@@ -615,8 +615,8 @@ class ConvCacheLog:
 
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
-                      "last_tokens": None, "last_at": None, "on_disk": None, "disk_mib": None, "disk_hits": 0,
-                      "refused": {}, "refused_total": 0, "last_refused": None}
+                      "last_tokens": None, "last_at": None, "refused": {}, "refused_total": 0, "last_refused": None,
+                      "on_disk": None, "disk_mib": None, "disk_hits": 0}
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it.  One poll at a
@@ -653,14 +653,12 @@ class ConvCacheLog:
         self.pos += end
         now = time.time()
         for line in data[:end].decode("utf-8", "replace").splitlines():
-            if "conversation disk:" in line:
-                m = self.ON_DISK.search(line)
-                if m:
-                    self.state["on_disk"], self.state["disk_mib"] = int(m.group(1)), int(m.group(2))
-                self.state["disk_hits"] += "disk hit:" in line
-                continue
             if "conversation cache:" not in line:
                 continue
+            m = self.ON_SSD.search(line)
+            if m:
+                self.state["on_disk"], self.state["disk_mib"] = int(m.group(1)), int(m.group(2))
+            self.state["disk_hits"] += "back from the SSD tier" in line
             m = self.EVENT.search(line)
             if m:
                 st = self.state
@@ -668,7 +666,7 @@ class ConvCacheLog:
                 if m.group(5) is not None:
                     st["evictions"] = int(m.group(5))
                 if m.group(1) != "skipped":
-                    st["restores" if m.group(1) == "restored" else "parks"] += 1
+                    st["parks" if m.group(1) == "parked" else "restores"] += 1
                     st["last_event"], st["last_tokens"], st["last_at"] = m.group(1), int(m.group(2)), now
                 else:
                     self._refused("put")
@@ -805,9 +803,9 @@ class StrataEngine:
             pin["preexec_fn"] = lambda: (say_nice() if say_nice else None, os.nice(nice))[0]
             print(f"[strata] engine priority: nice +{nice} (this PC has built-in Radeon graphics that usually draw the desktop; "
                   "STRATA_ENGINE_NICE=0 turns it off)", flush=True)
-        # --conversation-disk-persist on|exit-only: at QUIT the engine first writes its conversations to the disk (GBs)
-        persist = args[args.index("--conversation-disk-persist") + 1] if "--conversation-disk-persist" in args else "off"
-        self.quit_s = ENGINE_QUIT_WAIT_S if persist == "off" else 300
+        # --conversation-spill-persist on: at QUIT the engine first writes its conversations to the disk (GBs)
+        keep = "--conversation-spill-persist" in args and args[args.index("--conversation-spill-persist") + 1] == "on"
+        self.quit_s = 300 if keep else ENGINE_QUIT_WAIT_S
         end_leftover_engines(exe)                        # one an earlier run lost still holds the GPU and the memory
         oomd_pacer.make_room(args)                       # Linux desktop: the file cache an earlier start left is dropped first, so the engine's RAM is free (serve/oomd_pacer.py)
         spawned_at = time.monotonic()
