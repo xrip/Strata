@@ -1,5 +1,5 @@
 // The disk tier of --serve's parked conversations (--conversation-disk-dir): the RAM cache's evictions
-// (ConversationCache::set_on_evict) are written to session files (conversation_file.hpp, one per layer-split stage)
+// (ConversationCache::set_evict_sink) are written to session files (conversation_file.hpp, one per layer-split stage)
 // by a background thread and read back when a request continues them, within a time limit and a byte budget.
 // By default only this process reads its files back, and the folder's files of this tier are removed at start and at
 // the end.  `persist`: the files are bound to the session files' identity (model and settings) instead, a small index

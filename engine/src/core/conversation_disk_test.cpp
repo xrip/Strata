@@ -249,11 +249,11 @@ int main() {
         check(tier.stats().read_failed == 1, "a failed read is counted");
     }
 
-    {   // the RAM cache's evictions go to the disk tier (set_on_evict)
+    {   // the RAM cache's evictions go to the disk tier (set_evict_sink)
         ConversationDiskTier tier(opts(dir, GiB));
         check(tier.open(e), "open 6");
         ConversationCache cache(GiB, 1);
-        cache.set_on_evict([&](SavedConversation&& s) { tier.put(std::move(s)); });
+        cache.set_evict_sink([&](SavedConversation&& s) { tier.put(std::move(s)); });
         check(cache.put(image(400, 11)), "park a");
         check(cache.put(image(400, 12, 8000)), "park b: a leaves RAM");
         tier.wait_idle();
