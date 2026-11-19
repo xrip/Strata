@@ -286,8 +286,7 @@ int main() {
         std::string err;
         {
             ConversationSpill sp;
-            size_t taken = 99;
-            check(sp.open(kroot, 64 << 20, err, nullptr, &id, &taken) && sp.kept() && taken == 0 && sp.dir() == kroot / "kept",
+            check(sp.open(kroot, 64 << 20, err, nullptr, &id) && sp.kept() && sp.size() == 0 && sp.dir() == kroot / "kept",
                   "the kept folder opens empty");
             ConversationSpill second;
             check(!second.open(kroot, 64 << 20, err, nullptr, &id) && !err.empty(), "a second engine cannot take the kept folder");
@@ -308,9 +307,7 @@ int main() {
         }
         {
             ConversationSpill sp;
-            size_t taken = 0;
-            check(sp.open(kroot, 64 << 20, err, nullptr, &id, &taken) && taken == 1 && sp.size() == 1 && sp.bytes() > 0,
-                  "the next start takes the entry in");
+            check(sp.open(kroot, 64 << 20, err, nullptr, &id) && sp.size() == 1 && sp.bytes() > 0, "the next start takes the entry in");
             check(!fs::exists(kroot / "kept" / "stray.session") && !fs::exists(kroot / "kept" / ".conv-9.session.1234.tmp"),
                   "files no index names go at that start");
             check(sp.best(std::vector<int32_t>{1, 2, 3, 4}, {}, true).tokens == 3, "it is matched from its index, without a read");
@@ -322,8 +319,7 @@ int main() {
         }
         {
             ConversationSpill sp;
-            size_t taken = 9;
-            check(sp.open(kroot, 64 << 20, err, nullptr, &other, &taken) && taken == 0 && sp.size() == 0, "another identity: none taken in");
+            check(sp.open(kroot, 64 << 20, err, nullptr, &other) && sp.size() == 0, "another identity: none taken in");
             check(!fs::exists(kroot / "kept" / "conv-2.session") && !fs::exists(kroot / "kept" / "conv-2.idx"), "and its files went");
             sp.clear();
             sp.close();

@@ -303,15 +303,14 @@ public:
         std::vector<ConversationCheckpoint> checkpoints;   // ids and images only
     };
 
-    /// `keep`: the kept folder (--conversation-spill-persist), its entries of this identity taken in (`*taken`: how many)
+    /// `keep`: the kept folder (--conversation-spill-persist), with the entries an earlier run left of this identity
     bool open(const std::filesystem::path& root, uint64_t cap, std::string& error, size_t* cleaned = nullptr,
-              const SessionFileIdentity* keep = nullptr, size_t* taken = nullptr) {
+              const SessionFileIdentity* keep = nullptr) {
         std::lock_guard<std::mutex> lk(mu_);
         entries_.clear();
         budget_ = SpillBudget{cap, 0, 0};
         if (!ns_.open(root, error, cleaned, keep != nullptr)) return false;
         if (keep) take_in_locked(*keep);
-        if (taken) *taken = entries_.size();
         return true;
     }
     bool kept() const { std::lock_guard<std::mutex> lk(mu_); return ns_.kept(); }
@@ -412,10 +411,6 @@ public:
             SavedConversation part;
             size_t read = 0;
             ok = session_file_read(ns_.file_for(serial, k).string(), id, part, read, error, k ? stage_limits : limits);
-            if (ok && (part.cvec != e.cvec || part.live.ids != e.live.ids || part.checkpoints.size() != e.checkpoints.size())) {
-                ok = false;
-                error = "the file holds another conversation than its entry";
-            }
             if (!ok) break;
             if (k == 0) image = std::move(part);
             else image.stage_images.push_back(std::move(part));
@@ -478,7 +473,8 @@ private:
         for (size_t k = 0; k < e.parts; ++k) std::filesystem::remove(ns_.file_for(e.serial, k), ec);
     }
     /// open() of the kept folder: the entries an earlier run left with this identity, oldest first, within the budget; every
-    /// other file of the folder goes (another identity, a damaged index, files no index names, interrupted writes)
+    /// other file of the folder goes (another identity, a damaged index, files no index names, interrupted writes).  An index
+    /// is written after its entry's files and removed before them, so an index names complete files
     void take_in_locked(const SessionFileIdentity& id) {
         std::vector<Entry> found;
         std::error_code ec;
@@ -493,9 +489,6 @@ private:
         std::sort(found.begin(), found.end(), [](const Entry& a, const Entry& b) { return a.serial < b.serial; });
         std::vector<std::filesystem::path> keep{ns_.dir() / ".lock"};
         for (auto& e : found) {
-            bool whole = true;
-            for (size_t k = 0; k < e.parts; ++k) whole = whole && std::filesystem::is_regular_file(ns_.file_for(e.serial, k), ec);
-            if (!whole) continue;
             for (size_t k = 0; k < e.parts; ++k) keep.push_back(ns_.file_for(e.serial, k));
             keep.push_back(ns_.index_for(e.serial));
             next_serial_ = std::max(next_serial_, e.serial + 1);
@@ -549,7 +542,7 @@ private:
             ConversationCheckpoint c;
             if (in.key(c)) e.checkpoints.push_back(std::move(c));
         }
-        return in.ok && in.left() == 0 && e.parts >= 1 && path.filename() == "conv-" + std::to_string(e.serial) + ".idx";
+        return in.ok && in.left() == 0 && e.parts >= 1;
     }
     static ConversationCheckpoint stub(const ConversationCheckpoint& c) {
         ConversationCheckpoint s;

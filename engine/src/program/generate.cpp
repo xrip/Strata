@@ -13324,7 +13324,7 @@ int main(int argc, char** argv) {
                 else cap = strata::core::spill_default_budget(sp.available, floor);
                 if (!ec && cap < (uint64_t(64) << 20)) { why = "the disk is full"; cap = 0; }
             }
-            size_t cleaned = 0, taken = 0;
+            size_t cleaned = 0;
             if (cap > 0 && o.conversation_spill_persist == "on") {   // the files' identity is needed to take earlier ones in
                 std::string e;
                 strata::core::SessionFileIdentity id;
@@ -13332,14 +13332,14 @@ int main(int argc, char** argv) {
                 else std::fprintf(stderr, "strata serve: conversation cache: the SSD tier is not kept: the model cannot be "
                                           "fingerprinted (%s)\n", e.c_str());
             }
-            if (cap > 0 && !spill.open(root, cap, why, &cleaned, spill_id ? &*spill_id : nullptr, &taken)) cap = 0;
+            if (cap > 0 && !spill.open(root, cap, why, &cleaned, spill_id ? &*spill_id : nullptr)) cap = 0;
             if (cap > 0) {
                 std::fprintf(stderr, "strata serve: conversation cache: SSD tier in %s, up to %llu MiB%s%s\n", spill.dir().string().c_str(),
                              (unsigned long long) (cap >> 20),
                              cleaned ? (", " + std::to_string(cleaned) + " folder" + (cleaned == 1 ? "" : "s") +
                                         " of ended engines removed").c_str() : "",
-                             spill.kept() ? ("; kept for the next start, " + std::to_string(taken) + " from earlier runs (on SSD " +
-                                             std::to_string(spill.size()) + ", " + std::to_string(spill.bytes() >> 20) + " MiB)").c_str() : "");
+                             spill.kept() ? ("; kept for the next start, from earlier runs: on SSD " + std::to_string(spill.size()) +
+                                             ", " + std::to_string(spill.bytes() >> 20) + " MiB").c_str() : "");
                 if (spill.kept()) {
                     // the engine ends only through its stdin (the server's QUIT, or EOF when the server is gone), after the save:
                     // Ctrl+C, a shutdown's SIGTERM to every process and a closed terminal's SIGHUP reach it too
