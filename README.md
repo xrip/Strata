@@ -30,7 +30,7 @@ and a 172K prompt read cold, then 6 x 512 tokens of decode at ~8K context; range
 The longer the prompt, the bigger the gain: a 172K prompt that takes stock Strata 2 min 8 s is read here in 1 min 7 s.
 Since 2026-11-07 the fork is on 0.2.12 with `STRATA_IQ4_W4A8=2` on top: prompt reads another ~2 % faster than 0.2.12
 without it, the same answers (its row below). **Live now** (since 2026-11-19): upstream 0.2.16 (engine 0.1.62, no MMQ any more) with
-`STRATA_PREFILL_CPU_SHARE_MAX=4096` and `STRATA_PREFILL_RING=384` (without them its prompt path borrows 1,300 more cache
+`STRATA_PREFILL_CPU_SHARE_MAX=4096` and `STRATA_PREFILL_RING=384` (256 since the tuning of the same day; without them its prompt path borrows 1,300 more cache
 slots a card and reads 3-5 % slower): 64K read 28.46-28.69 s, 172K 65.32-65.41 s, an ~8K prompt 9.23-9.30 s, decode at
 8K 90.1-90.5 tok/s, against 0.2.14.1's 28.00-28.83 s, 64.94-67.04 s, 10.21-10.96 s and 87.0-90.1 tok/s (docs/FORK.md,
 "Measured 2026-11-19"). The 172K read and stock 0.2.16 against the 0.2.11 table above were not measured. Both arms keep the same model and capacity

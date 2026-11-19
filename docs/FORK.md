@@ -196,7 +196,7 @@ More on some of them:
   layer split, measured on 2x R9700): over PCIe 2.0 every chunk streams the experts the cards do not hold, so half as
   many chunks stream half as much. Measured: the table "Prompt chunk size" below. Not bit-exact against 8K chunks (no
   chunk size change is: upstream's 0.2.11 notes, near-tie block choices in the attention).
-- `STRATA_PREFILL_CPU_SHARE_MAX=4096`, `STRATA_PREFILL_RING=384` (since 0.2.16): the no-MMQ prompt path sizes its
+- `STRATA_PREFILL_CPU_SHARE_MAX=4096`, `STRATA_PREFILL_RING=256` (since 0.2.16; measured with 384 first, 256 is 0.8 % faster on 64K): the no-MMQ prompt path sizes its
   buffers for staged chunks up to the stream floor, which is this limit, and takes a 512-slot ring by itself; at 16,384
   it borrowed 4,332 cache slots a card instead of 3,036 and streamed 17-23 % more experts. With 4096 / 384 the loan is
   3,022 slots and a chunk of 4K+ tokens streams all its experts, which is faster here than the CPU share (an ~8K prompt
