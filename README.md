@@ -49,7 +49,7 @@ The engine is built from `engine/` (`-DSTRATA_ISA_FLOOR=avx`, `-DCMAKE_CUDA_ARCH
         "STRATA_SPLIT_MTP_BATCH": "1", "STRATA_PREFILL_LAYER_MAJOR": "0", "STRATA_GDN_TC": "2",
         "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_ROUTE_PRIOR": "0", "STRATA_PCIE_AUTO_SPLIT": "0",
         "STRATA_PF_GROUP_SCRATCH": "1", "STRATA_PF_HC_REGION": "1", "STRATA_KV_PREFETCH": "1",
-        "STRATA_PREFILL_ROUTED_STREAM": "1", "STRATA_MTP_ROOM_MIN": "16384", "STRATA_PREFILL_RING": "384"},
+        "STRATA_PREFILL_ROUTED_STREAM": "1", "STRATA_MTP_ROOM_MIN": "16384", "STRATA_PREFILL_RING": "256"},
 "args": ["--pack", ".../packs/swift-iq3_s", "--native", ".../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
          "--ple-gguf", ".../ple/ple-fp8.gguf", "--expert-profile", ".../terminal/data/expert-profile.bin",
          "--pool-workers", "19", "--expert-cache", "auto", "--prefill", "auto:16384",
@@ -59,6 +59,7 @@ The engine is built from `engine/` (`-DSTRATA_ISA_FLOOR=avx`, `-DCMAKE_CUDA_ARCH
          "--conversation-cache-mib", "10240", "--conversation-cache-slots", "16", "--conversation-cache-min-tokens", "32768",
          "--conversation-cache-min-free-mib", "1536",
          "--conversation-spill-dir", "/mnt/hdd12tb/conversation-spill", "--conversation-spill-persist", "on",
+         "--conversation-cache-rewind-keep", "8192",
          "--prompt-cache-spread", "--prompt-cache", "8", "--vision"],
 "vision": {"exe": ".../build-vision-cuda/bin/strata-vision", "gpu": true, "cuda_device": 2, "threads": 20, ...}
 ```
@@ -79,7 +80,8 @@ them together):
 | `STRATA_GDN_TC=2` (the third patch) | the prompt's DeltaNet recurrence on the tensor cores, also on sm_75 (not bitwise, upstream's rounding) | recurrence 11.2 -> 5.1 ms a layer at 8K; prompt reads of 4-46K tokens 6 % faster than 0.2.8 (2026-11-01) |
 | `STRATA_ROUTE_TAIL_SKIP=0`, `STRATA_ROUTE_PRIOR=0` | the model's own routing, so the answers stay exact (`ROUTE_PRIOR` is off by default since 0.2.8; kept as a pin) | the tail skip gave no speed here |
 | `--prefill auto:16384` | 16,384-token prompt chunks (a bare `auto` keeps 8,192 on a layer split; upstream raises it to 32,768 only on cc 8.0+ single cards) | 64K cold read 34.59 -> 30.21 s (-12.7 %), 172K 87.93 -> 70.40 s (-19.9 %), decode same within noise (2026-11-05); `auto:32768` and `auto:20480` leave an 8-slot ring here and are slower. Like any chunk size change, not bit-exact against 8K (upstream's 0.2.11 notes: near-tie block choices) |
-| `STRATA_PREFILL_CPU_SHARE_MAX=4096`, `STRATA_PREFILL_RING=384` (since 0.2.16) | the no-MMQ prompt path sizes its staged-chunk buffers up to this limit and takes a 512-slot ring by itself; these keep its loan of cache slots at 0.2.14's | 64K read 29.78 -> 28.58 s, 172K 68.0 -> 65.4 s, ~8K prompt 11.1 -> 9.3 s (2026-11-19, N S S N): 0.2.16 then reads as 0.2.14.1 did, ~8K prompts 12.5 % faster |
+| `STRATA_PREFILL_CPU_SHARE_MAX=4096`, `STRATA_PREFILL_RING=256` (since 0.2.16; the ring 384 -> 256 later the same day) | the no-MMQ prompt path sizes its staged-chunk buffers up to this limit and takes a 512-slot ring by itself; these keep its loan of cache slots at 0.2.14's | 64K read 29.78 -> 28.58 s, 172K 68.0 -> 65.4 s, ~8K prompt 11.1 -> 9.3 s (2026-11-19, N S S N): 0.2.16 then reads as 0.2.14.1 did, ~8K prompts 12.5 % faster; ring 256 against 384: 64K 28.31 against 28.54 s (-0.8 %), the rest the same; a share limit of 8192 made ~8K prompts 18 % slower |
+| `--conversation-cache-rewind-keep 8192` (upstream opt-in) | an agent sends the history back without the model's reasoning, so each next turn resumes a little before the end of the live conversation; without it the engine first parks (copies) the whole conversation, with it the reasoning past the resume point is dropped and nothing is copied. The output does not change (a park only reads) | at 49K context the next turn's prompt part 1.1-1.4 s -> 0.28-0.34 s (2 starts each); the live log had 451 such turns within 8,192 tokens, 1,718 s of parks (median 3.6 s at 100K+) |
 | `STRATA_PF_GROUP_SCRATCH=1`, `STRATA_PF_HC_REGION=1`, `STRATA_KV_PREFETCH=1`, `STRATA_PREFILL_ROUTED_STREAM=1`, `STRATA_MTP_ROOM_MIN=16384` (the prompt switches) | upstream opt-ins, all on in the [Speedy](https://github.com/DevDock-AI/Speedy) fork: prompt buffers that hold one expert group, the hyper-connection scratch in the shared region, the next layer's KV upload beside the compute, no copy of an expert no token routes to, the draft layer's experts lent to the prompt ring on reads of 16K+ | 64K read 30.04 -> 29.20 s (-2.8 %), 172K 70.10 -> 67.35 s (-3.9 %), decode the same (2026-11-05); the same greedy answers (2K / 20K / 70K prompts, CPU share fixed, swaps off) |
 | `STRATA_PCIE_AUTO_SPLIT=0` | keeps the CPU/PCIe miss share of a layer split at the probe's 0.17; 0.2.11 refines it from the CPU pool (0.25-0.30 here) | 0.2.11's rule: decode 84.4 -> 83.3 tok/s, -1.3 % (2026-11-05, Swift IQ3_S) |
 | `"gpu": [0, 1]`, `--layer-split auto` | the two x16 cards share the layers; the x1 card is left out (upstream's setup offers it as a helper) | a helper cache on the x1 card: decode 34-108 % slower (2026-10-18) |

@@ -258,6 +258,15 @@ The ~8K read is the decode test's first, cold prompt (7,822 tokens). N ran in bo
 | N: 0.2.16 | 29.84 / 29.72, 29.68 / 29.89 s | 67.76 / 68.37, 67.71 / 68.25 s | 11.38 / 11.05, 11.35 / 10.81 s | 88.7 / 92.3, 91.6 / 92.5 | 4,334 |
 | **S: 0.2.16 + the two settings** (live now) | 28.69 / 28.46 s (+0.6 %) | 65.32 / 65.41 s (-0.9 %) | 9.23 / 9.30 s (-12.5 %) | 90.1 / 90.5 tok/s | 3,022 |
 
+Then (`tune_0217.sh`, `chunk.sh S T Q C C Q T S`, `mkcfg-tune.py`; S = the settings above): `STRATA_PREFILL_RING=256`
+(Q) 64K 28.24 / 28.37 s against 28.45-28.66 s in four S-like starts (-0.8 %), 172K and ~8K the same, the loan 2,847
+slots: live since 16:55. `STRATA_PREFILL_CPU_SHARE_MAX=8192` (T): 64K +1.0 %, 172K +0.8 %, ~8K 11.1 s against 9.4 s
+(+18 %): the CPU share costs on this build. `--prefill auto:20480` (C): the engine still takes 16,384 (VRAM).
+`--conversation-cache-rewind-keep 2048` (`rewind_test.py`, a 49K-token conversation, three next turns sent back without
+the reasoning, K0 K K K0): the park before the read went (0.73-1.06 s) and the next turn's prompt part fell from
+1.1-1.4 s to 0.28-0.34 s; live since 16:55 with 8192 (the live log: 451 next turns within 8,192 tokens of the end,
+1,718 s of parks).
+
 nsys of one 64K read, A against N (`prof_0217.sh`, `pcmp.py`, `pcopy.py`): kernel time per card the same (GPU0 18.9 /
 18.7 s, GPU1 17.2 / 17.5 s; the expert kernels 7.13 s MMQ + IQ4_W4A8 against 6.89 s fused on GPU0), host-to-card
 copies 66.7 -> 79.6 GB (GPU0) and 78.1 -> 92.3 GB (GPU1): the same expert blobs, 17-23 % more of them.
