@@ -1,13 +1,31 @@
 # xrip/Strata: upstream Strata for a box with 2x CMP 50HX
 
-This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with four patches (the disk tier, the third one, the
-GDN scan on sm_75, the fourth, 5-8 row decode windows on the interleaved kernels, and the fifth, upstream's int8 IQ4
-prompt kernel on sm_75; the second, tool search, is upstream's since 0.2.10), and the settings measured fastest on
-one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866, 2x CMP 50HX (sm_75, 20 GB) on
-a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Swift 1.5 Qwen3.8-Flash-Next IQ3_S
-with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until 2026-11-04).
+This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with four patches: upstream's SSD tier of the
+conversation cache with a layer split and conversations kept across restarts (`--conversation-spill-persist on`; it
+replaced the fork's own disk tier, PR #1937), the older-copies rule of the conversation cache (#3404), the GDN scan on
+sm_75 (#4876) and 5-8 row decode windows on the interleaved kernels (#5137). The fifth, upstream's int8 IQ4 prompt
+kernel on sm_75 (#5498), went with upstream's MMQ path in 0.2.16; tool search is upstream's since 0.2.10. And the
+settings measured fastest on one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866,
+2x CMP 50HX (sm_75, 20 GB) on a layer split over PCIe 2.0 x16, a third CMP 50HX (10 GB, PCIe x1) for pictures, Swift 1.5
+Qwen3.8-Flash-Next IQ3_S with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until
+2026-11-04).
 
-Base: upstream main of 2026-11-15 (`baf16363`, 0.2.14.1, engine 0.1.60.1; merged 2026-11-16, 742 commits, 2 conflicts
+Base: upstream main of 2026-11-18 (`58ee3227`, 0.2.16, engine 0.1.62; merged 2026-11-19, 773 commits). The tree moved:
+the engine is `engine/` (configure `cmake ../engine`), the server `terminal/serve/server.py`, the app `app/`. Upstream
+removed llama.cpp's MMQ build path: every prompt expert runs on Strata's fused Turing kernels, and the fifth patch has no
+home. As shipped it read 4.8 % (64K) and 3.1 % (172K) slower here: nsys showed the same kernel time per card but 17-23 %
+more expert copies over PCIe, because the no-MMQ prompt path borrows 4,332 instead of 3,036 cache slots a card - its
+buffers for the staged chunks below the stream floor are MMQ-sized up to that floor (`STRATA_PREFILL_CPU_SHARE_MAX`,
+16,384 here; the group-scratch saving is MMQ's only) and the fused ring is 512 slots. With
+`STRATA_PREFILL_CPU_SHARE_MAX=4096` and `STRATA_PREFILL_RING=384` the loan is back at 3,022 slots and 0.2.16 reads 64K
+and 172K as 0.2.14.1 did, ~8K prompts 12.5 % faster (table "Measured 2026-11-19"). Upstream's own SSD tier of the
+conversation cache (P2 of #5697) does what the fork's disk tier did, but one stage only and with every file removed
+at the next start; the fork adds both (above) and drops `conversation_disk.*`. Also on this path: a Stop reaches
+every stage of a layer split between layers (#6011); a park that cannot fit no longer empties the cache first;
+`MALLOC_ARENA_MAX=2` for the server and the engine; tool-call repairs. Opt-in, not measured here yet:
+`--conversation-cache-rewind-keep N` (the live log had 296 follow-ups that parked their own conversation first, median
+3.6 s each). 1,911 server tests pass; GDN `tc->tc PASS h=aea57e39`; `mmvq_il_parity` OK.
+Base before: upstream main of 2026-11-15 (`baf16363`, 0.2.14.1, engine 0.1.60.1; merged 2026-11-16, 742 commits, 2 conflicts
 in the disk tier: upstream's new park segment pool gives its idle RAM back first, in the fork's `make_ram` too). On
 this box's path: a layer split keeps on each card only the dense weights of its own layers (`--trim-stage-weights`,
 on by default; from Strata-DualGPU): ~12 % more expert slots, faster decode; the prompt's new K/V cells go to the host
@@ -81,23 +99,27 @@ an exiting engine's memory (#4051), and the server's tool-call repairs (`tool_ca
 `STRATA_ROUTE_PRIOR` is off by default again (it never turned on by itself on these 20 GB cards). The fork's history before this base (the old patches, every sync and
 A/B since 2026-10-10) is the tag `fork-main-2026-10-28`.
 
-## The patch: parked conversations on a disk
+## The patch: upstream's SSD tier, on a layer split and across restarts
 
-`--conversation-disk-dir DIR` (needs the conversation cache): a conversation the RAM cache evicts, or one its budget
-refuses, is written to DIR in the background instead of dropped, and read back when a request continues it.
-`--conversation-disk-mib N` caps the files (default 32768). `--conversation-disk-persist off|on|exit-only`: `on` keeps
-the files for the next start (the engine writes the current and the parked conversations at QUIT and ignores SIGINT,
-SIGTERM and SIGHUP; the server waits 300 s for it), `exit-only` writes at QUIT only. A file is read back only when that
-is faster than reading its extra tokens again (both speeds measured as the engine runs). The Monitor's cache card shows
-what is on the disk. Also: an older, shorter copy of the conversation that shares at least 90 % of its tokens with the
-outgoing one is dropped, so the disk is not filled with stale copies.
+Upstream's SSD tier of the conversation cache (`conversation_spill.hpp`, 0.2.16) writes a conversation the RAM cache
+evicts, or one its RAM floor refuses, as a session file in the background and reads it back when a request continues
+it; only a conversation whose re-read costs more than the disk's round trip goes there (speeds measured as it runs).
+Upstream's tier takes one stage only and removes every file at the next start. The patch:
+- a layer split: an entry is one file per stage (`conv-N.session`, `conv-N.s1.session`); a later stage's file is read
+  with the RAM check only and every stage image is validated against its runtime as before;
+- `--conversation-spill-persist on`: the folder is `<--conversation-spill-dir>/kept`, held by its lock (one engine),
+  not removed at the end; an index per entry (`conv-N.idx`: the files' identity, the tokens and pictures it matches on)
+  lets the next start take the entries of the same model, engine version and settings in without reading them, and
+  everything else in the folder goes at that start. QUIT parks the current conversation and writes every parked one
+  (the engine ignores SIGINT, SIGTERM and SIGHUP meanwhile and ends through its stdin; the server waits 300 s).
+The Monitor's cache card shows what is on the disk. The older-copies rule (#3404): an older, shorter copy of the
+outgoing conversation that shares at least 90 % of its tokens is dropped, not parked or written.
 
-Measured here: 286,199 tokens back from the HDD in 41.7 s (a cold read: ~136 s); from NVMe 165K tokens in 6.7 s
-against 77.6 s, same greedy answers. Upstream PRs: #1937 (the disk tier), #3404 (the older copies). Upstream has no
-disk tier of its own (0.2.7 keeps parked conversations in RAM, opt-in in VRAM).
-
-Limits: not with upstream's opt-in `STRATA_PARK_ASYNC` / `STRATA_PARK_VRAM_MIB` (their images are filled after the
-park returns; the disk writer would copy them unfinished). A new engine version refuses the saved files once (their
+Measured 2026-11-19 (`~/opt-avx1/spill_e2e.sh`, the live model and settings, one RAM slot, deterministic): A and B
+(41.8K tokens) and L (165.6K) read; A went to the disk while the engine ran (2.6 s in the background), B and L at the
+SIGTERM (saved in 8.8 s, 3 entries, 6 files, 5.7 GB); after a new start all three came back from the kept folder with
+the same greedy answers, in 2.7, 3.0 and 8.4 s (L cold: 66.1 s). Earlier, with the fork's own tier (#1937): 286,199
+tokens back from the HDD in 41.7 s against ~136 s cold. A new engine version refuses the kept files once (their
 identity holds the version).
 
 ## Was the second patch: Anthropic's tool search on /v1/messages (#4663), upstream's since 0.2.10
@@ -155,39 +177,31 @@ and faster per launch; it matters where windows are wider. Code: `Q81Il` (`PLANE
 `il_pm_at` and `kIlRows58_75` in `src/kernels/cuda/native_mmvq.cu`. Tried and dropped: planes for the block-major copy
 (Q6_K 6144x2560 5 columns 52 -> 74 us), Q6_K 5 columns as 6 (11-62 % slower).
 
-## The fifth patch: upstream's IQ4 W4A8 prompt kernel on sm_75 (`STRATA_IQ4_W4A8=2`)
+## Was the fifth patch: upstream's IQ4 W4A8 prompt kernel on sm_75 (`STRATA_IQ4_W4A8=2`, #5498)
 
-0.2.12's opt-in `moe_iq4_w4a8.cu` (from upstream PR #4871) computes the prompt's IQ4_XS / IQ4_NL expert products with
-MMQ's sums in another schedule: 128 weight rows a CTA, the 4-bit weights turned into int8 in registers, 128-value K
-steps through a cp.async pipeline. It needs cp.async and the m16n8k32 s8 MMA (sm_80); sm_75 has ldmatrix and the
-m8n8k16 s8 MMA. The patch: on sm_75 the next K step's pieces are loaded into registers before this step's MMAs and
-stored to the other shared-memory stage after them, each m16n8k32 is four m8n8k16 from the same C (exact int32 sums),
-and `arch_ok()` takes 7.5. The model here has IQ4_NL down products in 39 of 48 layers (2560 x 640, K = 640), so `=2`
-(the IQ4_NL products only; one layer's IQ4_XS gate/up is left on MMQ).
-- `prefill_iq4_w4a8_test` on GPU 0: all identical against MMQ (default, `--full`, `--tokens 97 / 2049 / 8191`,
-  `--wide`; three routings each). `--full --bench`, MMQ time over the kernel's: IQ4_NL down +46..+59 %, IQ4_XS gate/up
-  +23..+31 % (config 0; configs 1-3 slower). 255 registers, 12-36 bytes of spill a thread.
-- Engine: prompt reads ~2 % faster, decode not on this path (the table "Measured 2026-11-07"); 20,288 products ran,
-  128 stayed on MMQ (launches MMQ would split along K). The exactness gate: the same answers.
-Code: the `STRATA_W4A8_SM75` blocks in `src/prefill/moe_iq4_w4a8.cu`; the test's arch check. The sm_80+ source is
-upstream's word for word: sm_86 and sm_120 SASS of all 8 kernels identical to 0.2.12's. Upstream PR #5498 (branch
-`pr/iq4-w4a8-sm75`); drop the patch here when it is merged.
+It ran the prompt's IQ4_NL down products on upstream's int8 kernel instead of MMQ (prompt reads ~2 % faster, the table
+"Measured 2026-11-07"). Upstream removed MMQ and this kernel in 0.2.16 (3e26b4e15); the fused Turing kernels run every
+expert now.
 
 ## Settings for this box
 
-Build: `-DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_ISA_FLOOR=avx` (the released engines need AVX2:
-on this CPU they stop at start). The config and what each setting gives here: the top of [README.md](../README.md).
+Build: `cmake ../engine -DSTRATA_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75 -DSTRATA_ISA_FLOOR=avx` (the released
+engines need AVX2: on this CPU they stop at start). The config and what each setting gives here: the top of [README.md](../README.md).
 More on some of them:
 
 - `STRATA_PREFILL_LAYER_MAJOR=0`: 0.2.7 reads a long prompt layer by layer on a CUDA layer split by default (0.2.10
   no longer does, so the setting only keeps older builds the same); here it is off by itself only because CUDA1 has ~450 MiB free. Forced on (2 GB VRAM kept free): a 64K prompt 53.0 s against
   30.5 s (it streams ~74 GB of experts over PCIe 2.0; the chunk path with the CPU share does better), decode 2 % slower.
-- `--prefill auto:16384` with `STRATA_PREFILL_CPU_SHARE_MAX=16384` (adapted from 0.2.11's 32K ceiling for cc 8.0+
-  single cards; a bare `auto` takes 8,192 on any layer split, measured on 2x R9700): over PCIe 2.0 every chunk streams
-  the experts the cards do not hold, so half as many chunks stream half as much. Measured: the table "Prompt chunk
-  size" below. The share limit must follow the chunk, or the 16K chunks lose the CPU share. Not bit-exact against 8K
-  chunks (no chunk size change is: upstream's 0.2.11 notes, near-tie block choices in the attention); kept as
-  upstream keeps its own 32K default.
+- `--prefill auto:16384` (adapted from 0.2.11's 32K ceiling for cc 8.0+ single cards; a bare `auto` takes 8,192 on any
+  layer split, measured on 2x R9700): over PCIe 2.0 every chunk streams the experts the cards do not hold, so half as
+  many chunks stream half as much. Measured: the table "Prompt chunk size" below. Not bit-exact against 8K chunks (no
+  chunk size change is: upstream's 0.2.11 notes, near-tie block choices in the attention).
+- `STRATA_PREFILL_CPU_SHARE_MAX=4096`, `STRATA_PREFILL_RING=384` (since 0.2.16): the no-MMQ prompt path sizes its
+  buffers for staged chunks up to the stream floor, which is this limit, and takes a 512-slot ring by itself; at 16,384
+  it borrowed 4,332 cache slots a card instead of 3,036 and streamed 17-23 % more experts. With 4096 / 384 the loan is
+  3,022 slots and a chunk of 4K+ tokens streams all its experts, which is faster here than the CPU share (an ~8K prompt
+  10.6 -> 9.3 s). The table "Measured 2026-11-19". (With MMQ until 0.2.14 the limit was 16,384: the CPU share helped the
+  16K chunks.)
 - `STRATA_SPLIT_MTP_BATCH=1`: on a layer split the draft layer's prompt K/V was built by its own pass, 8 rows at a
   time, while the next chunk waited (405-473 ms per 8K chunk in a `STRATA_PREFILL_TIMING` run); this builds it in one
   batched pass on CUDA1. Only the drafts can change, not the model's tokens. A 64K cold read 30.70 / 30.61 s against
@@ -231,6 +245,22 @@ case. Not kept: nothing measurable in the engine, and the patch would have to re
 |---|---:|---:|---:|
 | F: live | 30.20 / 30.18 s | 70.21 / 70.30 s | 84.7 / 84.0 tok/s |
 | T: + the sign patch | 30.17 / 30.43 s | 70.37 / 70.49 s | 84.1 / 84.8 tok/s |
+
+## Measured 2026-11-19 (the 0.2.16 sync; `~/opt-avx1/ab_0217.sh`, `chunk.sh A N N A`, then `N S S N`, `mkcfg-0217.py`)
+
+The live config (16K chunks), vision on GPU 2, inside `perf.sh`. A = the live 0.1.60.1 (MMQ, `STRATA_IQ4_W4A8=2`),
+N = 0.2.16 as shipped (fused Turing kernels), S = N + `STRATA_PREFILL_CPU_SHARE_MAX=4096` + `STRATA_PREFILL_RING=384`.
+The ~8K read is the decode test's first, cold prompt (7,822 tokens). N ran in both runs and agreed within 0.5 %.
+
+| Arm | 64K read | 172K read | ~8K read | decode at 8K | loan, CUDA0 slots |
+|---|---:|---:|---:|---:|---:|
+| A: 0.1.60.1 (live before) | 28.00 / 28.83 s | 64.94 / 67.04 s | 10.21 / 10.96 s | 90.1 / 87.0 tok/s | 3,036 |
+| N: 0.2.16 | 29.84 / 29.72, 29.68 / 29.89 s | 67.76 / 68.37, 67.71 / 68.25 s | 11.38 / 11.05, 11.35 / 10.81 s | 88.7 / 92.3, 91.6 / 92.5 | 4,334 |
+| **S: 0.2.16 + the two settings** (live now) | 28.69 / 28.46 s (+0.6 %) | 65.32 / 65.41 s (-0.9 %) | 9.23 / 9.30 s (-12.5 %) | 90.1 / 90.5 tok/s | 3,022 |
+
+nsys of one 64K read, A against N (`prof_0217.sh`, `pcmp.py`, `pcopy.py`): kernel time per card the same (GPU0 18.9 /
+18.7 s, GPU1 17.2 / 17.5 s; the expert kernels 7.13 s MMQ + IQ4_W4A8 against 6.89 s fused on GPU0), host-to-card
+copies 66.7 -> 79.6 GB (GPU0) and 78.1 -> 92.3 GB (GPU1): the same expert blobs, 17-23 % more of them.
 
 ## Measured 2026-11-16 (the 0.2.14.1 sync; `~/opt-avx1/ab_0216.sh`, `quick.sh A M O O M A`, `mkcfg-0216.py`)
 
@@ -372,16 +402,13 @@ tested. Tools on the box: `~/opt-avx1/quick.sh` (this table), `perf.sh` (the idl
 
 ## Syncing
 
-`git fetch upstream && git merge upstream/main` on `main`. Build with `-DSTRATA_MMQ=ON` (upstream's default is OFF
-since 0.2.14; a new build folder without it has no MMQ and no fifth patch). The patch lives in `conversation_disk.*`, a few blocks of
-`generate.cpp` (marked `--conversation-disk-dir`), `conversation_cache.hpp` (`set_on_evict`, `shared_tokens`, the 90 %
-rule) and the server's cache card. The fourth: `Q81Il` (`PLANES`) and `il_pm_at` (re-run `mmvq_il_parity` after a
-sync that touches `native_mmvq.cu`). The fifth: the `STRATA_W4A8_SM75` blocks of `moe_iq4_w4a8.cu` (after a sync that
-touches that file, `CUDA_VISIBLE_DEVICES=0 prefill_iq4_w4a8_test --full` must say "all identical" on sm_75, not
-"skipped"; drop the patch if upstream takes the PR). The third patch: `gdn_tc.cuh` and `gdn_rec_tc`; every config keeps
-`"STRATA_GDN_TC": "2"`. After every sync, on GPU 0 with Strata stopped (the x1 card runs other work now):
-`CUDA_VISIBLE_DEVICES=0 STRATA_GDN_TC=2 gdn_harness
---T 5000 --chunk 2500 --cuts 37 --paths auto,pipe --ref-heads 0,17,47` must show `tc->tc` and PASS on the `auto` line
-(`tc->pipe` means the sm_75 scan is off). Skip the
+`git fetch upstream && git merge upstream/main` on `main`; build from `engine/`. The patch lives in the
+`conversation_spill.hpp` changes (`kept`, `parts`, the index), the `--conversation-spill-persist` blocks of
+`generate.cpp`, `conversation_cache.hpp` (`superseded_at`, the 90 % rule) and the server's cache card
+(`ConvCacheLog.ON_SSD`, `quit_s`); `conversation_spill_test` checks it. The fourth: `Q81Il` (`PLANES`) and `il_pm_at`
+(re-run `mmvq_il_parity` after a sync that touches `native_mmvq.cu`). The third patch: `gdn_tc.cuh` and `gdn_rec_tc`;
+every config keeps `"STRATA_GDN_TC": "2"`. After every sync, on GPU 0 with Strata stopped (the x1 card runs other work
+now): `CUDA_VISIBLE_DEVICES=0 STRATA_GDN_TC=2 gdn_harness --T 5000 --chunk 2500 --cuts 37 --paths auto,pipe
+--ref-heads 0,17,47` must show `tc->tc` and PASS on the `auto` line (`tc->pipe` means the sm_75 scan is off). Skip the
 speed test when nothing on this box's path changed (DeepSeek, AVX2/AVX-512 kernels, one-GPU features); otherwise
-`quick.sh` against the deployed build.
+`chunk.sh` against the deployed build, and look at the prompt path's loan ("the prompt path borrows N cache slots").
