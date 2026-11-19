@@ -520,16 +520,18 @@ private:
         for (const auto& c : e.checkpoints) out.key(c);
         std::filesystem::path temp = path;
         temp += ".tmp";
+        bool written = false;
         {
             std::ofstream f(temp, std::ios::binary | std::ios::trunc);
             f.write(out.b.data(), (std::streamsize) out.b.size());
-            if (!f) error = "cannot write the index " + temp.string();
+            written = bool(f);
         }
         std::error_code ec;
-        if (error.empty()) std::filesystem::rename(temp, path, ec);   // a reader sees the whole index or none
-        if (ec) error = "cannot publish the index: " + ec.message();
-        if (!error.empty()) std::filesystem::remove(temp, ec);
-        return error.empty();
+        if (written) std::filesystem::rename(temp, path, ec);   // a reader sees the whole index or none
+        if (written && !ec) return true;
+        error = written ? "cannot publish the index: " + ec.message() : "cannot write the index " + temp.string();
+        std::filesystem::remove(temp, ec);
+        return false;
     }
     static bool read_index(const std::filesystem::path& path, const SessionFileIdentity& id, Entry& e) {
         std::ifstream f(path, std::ios::binary);
