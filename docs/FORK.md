@@ -10,7 +10,20 @@ settings measured fastest on one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX
 Qwen3.8-Flash-Next IQ3_S with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until
 2026-11-04).
 
-Base: upstream main of 2026-11-18 (`58ee3227`, 0.2.16, engine 0.1.62; merged 2026-11-19, 773 commits). The tree moved:
+Base: upstream main of 2026-11-20 (`3142b66b9`, 0.2.17, engine 0.1.63; merged 2026-11-20, 277 commits, no conflicts).
+Reads and decode as 0.2.16 at the same loan - the new `--prefill auto:N` pricing did not move it (the table "Measured
+2026-11-20"). The CPU prompt share is armed by default on a two-card layer split now (this box armed it already;
+`STRATA_SPLIT_CPU_SHARE=0` is the way back) and the CPU pool's dependency queue `STRATA_POOL_DEP` is on by default;
+both measured neutral here. Adopted: `STRATA_P2P_HANDOFF=1` - the split's hand-off buffers sit in the next card's VRAM
+and are written over P2P, not through pinned host memory: 64K read -0.6 %, decode -0.9 % (`N H H N`). Neutral, off:
+`STRATA_L2_PF=1` (dense-weight L2 prefetch; reads here are expert-bound) and `STRATA_PREFILL_CPU_SHARE_NT=1` (the CPU
+taking experts of more than 8 tokens is slower on AVX1). Upstream also leaves `STRATA_ROUTE_TAIL_SKIP` off by default
+now (0.1.42 to 0.1.62 set rank 7 on CUDA); the live config pins 0 anyway. Not for sm_75: S23, the fused HC up
+projection + mix (`STRATA_HC_UPMIX`, cp.async + BF16 MMA, both sm_80+), and #6023's Volta WMMA prefill (cards without
+the fused Turing kernels). 8 engine rule tests and `conversation_spill_test` (the port) pass; GDN `tc->tc PASS
+h=aea57e39`; `mmvq_il_parity` OK; the spill persist e2e PASSes (its table below).
+
+Base before: upstream main of 2026-11-18 (`58ee3227`, 0.2.16, engine 0.1.62; merged 2026-11-19, 773 commits). The tree moved:
 the engine is `engine/` (configure `cmake ../engine`), the server `terminal/serve/server.py`, the app `app/`. Upstream
 removed llama.cpp's MMQ build path: every prompt expert runs on Strata's fused Turing kernels, and the fifth patch has no
 home. As shipped it read 4.8 % (64K) and 3.1 % (172K) slower here: nsys showed the same kernel time per card but 17-23 %
@@ -207,7 +220,11 @@ More on some of them:
   batched pass on CUDA1. Only the drafts can change, not the model's tokens. A 64K cold read 30.70 / 30.61 s against
   29.19 / 29.46 s (-4.3 %), decode at 8K 93.4 against 94.8 tok/s, 28.45 against 28.35 ms per verify window
   (2026-10-28, four starts A / B / A / B).
-- `STRATA_ROUTE_TAIL_SKIP=0` keeps the model's exact output (the tail skip gave nothing here).
+- `STRATA_P2P_HANDOFF=1` (since 0.2.17, upstream's #6023 opt-in): the layer split's hand-off buffers sit in the next
+  card's VRAM and are written over P2P (PHB path here, Gen2 x16) instead of pinned host memory: 64K read -0.6 %,
+  decode -0.9 %, 172K unchanged (`N H H N`, 2026-11-20).
+- `STRATA_ROUTE_TAIL_SKIP=0` keeps the model's exact output (the tail skip gave nothing here; upstream also defaults it
+  off since 0.1.63).
 - Pictures: the CUDA picture reader (`build-vision-cuda/bin/strata-vision`) on the third card (`vision.cuda_device: 2`).
   Layers or a helper cache on that x1 card were slower.
 - Memory: no `numactl`. Node 0 has a 32 GB and a 16 GB stick, so its top 16 GiB (physical 34-50 GiB) is on one channel;
@@ -245,6 +262,25 @@ case. Not kept: nothing measurable in the engine, and the patch would have to re
 |---|---:|---:|---:|
 | F: live | 30.20 / 30.18 s | 70.21 / 70.30 s | 84.7 / 84.0 tok/s |
 | T: + the sign patch | 30.17 / 30.43 s | 70.37 / 70.49 s | 84.1 / 84.8 tok/s |
+
+## Measured 2026-11-20 (the 0.2.17 sync; `~/opt-avx1/ab_0218.sh`, `mkcfg-0217.py`, `mksw.py`; `chunk.sh A N N A`, then `N X X N` per switch)
+
+The live config, vision on GPU 2, inside `perf.sh`. A = the live 0.1.62, N = 0.1.63 as shipped. N ran in every run
+(five in all) at 28.4-28.6 s on 64K; the run-to-run spread is about 1 %, so the switch deltas below are read against
+each run's own N pair.
+
+| Arm | 64K read | 172K read | decode at 8K | loan, CUDA0 slots |
+|---|---:|---:|---:|---:|
+| A: 0.1.62 (live before) | 27.56 / 28.72 s | 63.74 / 65.17 s | 5,544 ms avg | 2,847 |
+| N: 0.1.63 | 28.10 / 28.23 s (+0.1 %) | 64.91 / 65.10 s (+0.9 %) | 5,526 ms avg | 2,847 |
+| D: N + `STRATA_POOL_DEP=0` | -0.3 % | -0.1 % | equal | 2,847 |
+| L: N + `STRATA_L2_PF=1` | +0.0 % | +0.0 % | - | 2,847 |
+| **H: N + `STRATA_P2P_HANDOFF=1`** (live now) | **-0.6 %** | -0.1 % | **-0.9 %** | 2,847 |
+| T: N + `STRATA_PREFILL_CPU_SHARE_NT=1` | +0.4 % | +0.4 % | - | 2,847 |
+
+The 172K +0.9 % did not repeat inside one run (N's two arms straddle A's); read as equal to +0.5 % at most. The ring
+stays 256 slots and the loan 2,847: `--prefill auto:N` is priced like `auto` now and nothing moved. Spill persist e2e
+on 0.1.63: PASS, same numbers as 2026-11-19 (QUIT save 8.8 s, 5.7 GiB; back in 3.0 / 3.5 / 9.8 s, same answers).
 
 ## Measured 2026-11-19 (the 0.2.16 sync; `~/opt-avx1/ab_0217.sh`, `chunk.sh A N N A`, then `N S S N`, `mkcfg-0217.py`)
 
