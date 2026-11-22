@@ -18,7 +18,11 @@ race). Nothing in the Qwen3.8-Flash-Next engine source we build changed - `engin
 the new files - so 0.1.64 is 0.1.63 with a new version line; every change near our start line is fenced by
 `is_hy4(cfg)`. Not for this box: Hy4-Flash is a 220B class model and its CPU expert kernels want AVX2/AVX-512 (this
 box is AVX1). GDN `tc->tc PASS h=aea57e39` (bitwise as 0.1.63); `mmvq_il_parity` OK; the conversation suites and the
-14 monitor tests pass; the speed gate (`~/opt-avx1/ab_0218b.sh`, `A N N A`) pending a free window.
+14 monitor tests pass. The speed gate (`~/opt-avx1/ab_0218b.sh`, `A N N A`, A the live 0.1.63): reads and decode equal
+- 64K 28.27-28.47 s (A 27.63/28.48, the 27.63 the run's fast outlier), 172K 64.72-65.05 s (A 63.76/65.49), decode
+5,596/5,610 ms a 512 batch (A 5,550/5,523; within-arm spread 5 %), every delta inside the run's own spread, the loan
+2,847 + ring 256 in all arms; the spill persist e2e PASSes (kept 5.7 GiB, back in 2.7 / 3.2 / 8.4 s, same answers).
+Live since 2026-11-22 (`strata.before-0219` = the 0.1.63 binary).
 
 Base before: upstream main of 2026-11-20 (`3142b66b9`, 0.2.17, engine 0.1.63; merged 2026-11-20, 277 commits, no conflicts).
 Reads and decode as 0.2.16 at the same loan - the new `--prefill auto:N` pricing did not move it (the table "Measured

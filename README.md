@@ -29,10 +29,12 @@ and a 172K prompt read cold, then 6 x 512 tokens of decode at ~8K context; range
 
 The longer the prompt, the bigger the gain: a 172K prompt that takes stock Strata 2 min 8 s is read here in 1 min 7 s.
 Since 2026-11-07 the fork is on 0.2.12 with `STRATA_IQ4_W4A8=2` on top: prompt reads another ~2 % faster than 0.2.12
-without it, the same answers (its row below). **Live now** (since 2026-11-20): upstream 0.2.17 (engine 0.1.63, no MMQ any more) with
-`STRATA_PREFILL_CPU_SHARE_MAX=4096`, `STRATA_PREFILL_RING=256` and `STRATA_P2P_HANDOFF=1`: 64K read 28.44-28.50 s,
-172K 65.15-65.35 s, decode at 8K 5.52-5.56 s per 512 tokens - reads and decode equal to the 0.2.16 live build, the
-loan unchanged at 2,847 slots ("Measured 2026-11-20"; 0.2.16's own numbers, "Measured 2026-11-19"). The 172K read and stock 0.2.16 against the 0.2.11 table above were not measured. Both arms keep the same model and capacity
+without it, the same answers (its row below). **Live now** (since 2026-11-22): upstream 0.2.18 (engine 0.1.64 - the
+hy4flash release; it changes no engine source this build compiles, so 0.1.64 is 0.1.63 with a new version line) with
+`STRATA_PREFILL_CPU_SHARE_MAX=4096`, `STRATA_PREFILL_RING=256` and `STRATA_P2P_HANDOFF=1`: 64K read 28.3-28.5 s,
+172K 64.7-65.5 s, decode at 8K 5.52-5.61 s per 512 tokens - reads and decode equal to the 0.2.17 live build (every
+delta inside the run's own spread), the loan unchanged at 2,847 slots ("Measured 2026-11-22" in docs/FORK.md; the
+0.2.17 numbers, "Measured 2026-11-20"; 0.2.16's own, "Measured 2026-11-19"). The 172K read and stock 0.2.16 against the 0.2.11 table above were not measured. Both arms keep the same model and capacity
 settings (393K context with YaRN, MTP drafts, int8 KV, the conversation cache, pictures on the third card); stock
 upstream runs `STRATA_GDN_TC=1`, which leaves sm_75 on the old scan. Decode of one config moves ~2 % from start to start
 here (where the expert memory lands in RAM). The table of 2026-10-28 (engine 0.2.7, the original IQ3_XXS) is in
@@ -87,7 +89,7 @@ them together):
 | `STRATA_PCIE_AUTO_SPLIT=0` | keeps the CPU/PCIe miss share of a layer split at the probe's 0.17; 0.2.11 refines it from the CPU pool (0.25-0.30 here) | 0.2.11's rule: decode 84.4 -> 83.3 tok/s, -1.3 % (2026-11-05, Swift IQ3_S) |
 | `"gpu": [0, 1]`, `--layer-split auto` | the two x16 cards share the layers; the x1 card is left out (upstream's setup offers it as a helper) | a helper cache on the x1 card: decode 34-108 % slower (2026-10-18) |
 | `--max-context 393216`, `--rope-scaling yarn --rope-scale 1.5 --yarn-orig-ctx 262144` | a 393,216-token context: YaRN stretches the model's trained 262,144 positions 1.5x (setup writes the same for this length) | not measured here; upstream's run (RTX 5080, IQ3_S, YaRN factor 2): at 293K tokens the loss 2.22 -> 2.04 nats a token against no scaling (docs/DETAILS.md) |
-| conversation cache (10 GiB, 16 slots, from 32K tokens) + `--conversation-spill-dir` + `--conversation-spill-persist on` (the patch) | parked agent conversations stay in RAM, then on the HDD, and survive a restart | 165,558 tokens back after a restart in 8.4 s against a 66.1 s cold read, the same answers (2026-11-19); the same e2e PASSes on 0.2.17: QUIT save 8.8 s, back in 3.0 / 3.5 / 9.8 s (2026-11-20); earlier tier: 286,199 tokens from the HDD in 41.7 s, cold ~136 s |
+| conversation cache (10 GiB, 16 slots, from 32K tokens) + `--conversation-spill-dir` + `--conversation-spill-persist on` (the patch) | parked agent conversations stay in RAM, then on the HDD, and survive a restart | 165,558 tokens back after a restart in 8.4 s against a 66.1 s cold read, the same answers (2026-11-19); the same e2e PASSes on 0.2.17 (QUIT save 8.8 s, back in 3.0 / 3.5 / 9.8 s, 2026-11-20) and on 0.2.18 (kept 5.7 GiB, back in 2.7 / 3.2 / 8.4 s, 2026-11-22); earlier tier: 286,199 tokens from the HDD in 41.7 s, cold ~136 s |
 | `--prompt-cache-spread`, `--prompt-cache 8` | after an agent edits its history, the read restarts near the edit | a 196K conversation reused 187,696 tokens, not a ~100 s re-read |
 | picture reader on CUDA 2 | the x1 card reads pictures; layers on it were slower | a picture 2.8 s -> 0.18 s (2026-10-18) |
 
