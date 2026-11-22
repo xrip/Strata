@@ -29,12 +29,12 @@ and a 172K prompt read cold, then 6 x 512 tokens of decode at ~8K context; range
 
 The longer the prompt, the bigger the gain: a 172K prompt that takes stock Strata 2 min 8 s is read here in 1 min 7 s.
 Since 2026-11-07 the fork is on 0.2.12 with `STRATA_IQ4_W4A8=2` on top: prompt reads another ~2 % faster than 0.2.12
-without it, the same answers (its row below). **Live now** (since 2026-11-22): upstream 0.2.18 (engine 0.1.64 - the
-hy4flash release; it changes no engine source this build compiles, so 0.1.64 is 0.1.63 with a new version line) with
-`STRATA_PREFILL_CPU_SHARE_MAX=4096`, `STRATA_PREFILL_RING=256` and `STRATA_P2P_HANDOFF=1`: 64K read 28.3-28.5 s,
-172K 64.7-65.5 s, decode at 8K 5.52-5.61 s per 512 tokens - reads and decode equal to the 0.2.17 live build (every
-delta inside the run's own spread), the loan unchanged at 2,847 slots ("Measured 2026-11-22" in docs/FORK.md; the
-0.2.17 numbers, "Measured 2026-11-20"; 0.2.16's own, "Measured 2026-11-19"). The 172K read and stock 0.2.16 against the 0.2.11 table above were not measured. Both arms keep the same model and capacity
+without it, the same answers (its row below). **Live now** (since 2026-11-22): upstream 0.2.19 (engine 0.1.65) with
+`STRATA_PREFILL_CPU_SHARE_MAX=4096`, `STRATA_PREFILL_RING=256`, `STRATA_P2P_HANDOFF=1` and `STRATA_PREFILL_WARM=0`
+(0.2.19's cuBLAS warm-up at start costs GPU1 69 expert slots and decode 2 %): 64K read 28.1 s, 172K 64.7 s, decode
+at 8K 5.63 s per 512 tokens - reads and decode equal to the 0.2.18 live build (28.2 s / 64.6 s / 5.62 s in the same
+night's gate), the loan unchanged at 2,847 slots (docs/FORK.md, the 0.2.19 base; the 0.2.17 numbers, "Measured
+2026-11-20"; 0.2.16's own, "Measured 2026-11-19"). The 172K read and stock 0.2.16 against the 0.2.11 table above were not measured. Both arms keep the same model and capacity
 settings (393K context with YaRN, MTP drafts, int8 KV, the conversation cache, pictures on the third card); stock
 upstream runs `STRATA_GDN_TC=1`, which leaves sm_75 on the old scan. Decode of one config moves ~2 % from start to start
 here (where the expert memory lands in RAM). The table of 2026-10-28 (engine 0.2.7, the original IQ3_XXS) is in
@@ -49,7 +49,7 @@ The engine is built from `engine/` (`-DSTRATA_ISA_FLOOR=avx`, `-DCMAKE_CUDA_ARCH
         "STRATA_SIDE_MIXER": "2", "STRATA_ATTN_DAILY": "1", "STRATA_B6_MMVQ_ROWS": "1",
         "STRATA_SPLIT_MTP_BATCH": "1", "STRATA_PREFILL_LAYER_MAJOR": "0", "STRATA_GDN_TC": "2",
         "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_ROUTE_PRIOR": "0", "STRATA_PCIE_AUTO_SPLIT": "0",
-        "STRATA_P2P_HANDOFF": "1",
+        "STRATA_P2P_HANDOFF": "1", "STRATA_PREFILL_WARM": "0",
         "STRATA_PF_GROUP_SCRATCH": "1", "STRATA_PF_HC_REGION": "1", "STRATA_KV_PREFETCH": "1",
         "STRATA_PREFILL_ROUTED_STREAM": "1", "STRATA_MTP_ROOM_MIN": "16384", "STRATA_PREFILL_RING": "256"},
 "args": ["--pack", ".../packs/swift-iq3_s", "--native", ".../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
@@ -81,6 +81,7 @@ them together):
 | `STRATA_PREFILL_LAYER_MAJOR=0` | keeps the chunked prompt path; 0.2.7's layer-by-layer path streams the experts over PCIe 2.0 (upstream's default since 0.2.10; kept as a pin) | forced on: 64K prompt 53.0 s against 30.5 s (2026-10-28) |
 | `STRATA_GDN_TC=2` (the third patch) | the prompt's DeltaNet recurrence on the tensor cores, also on sm_75 (not bitwise, upstream's rounding) | recurrence 11.2 -> 5.1 ms a layer at 8K; prompt reads of 4-46K tokens 6 % faster than 0.2.8 (2026-11-01) |
 | `STRATA_ROUTE_TAIL_SKIP=0`, `STRATA_ROUTE_PRIOR=0` | the model's own routing, so the answers stay exact (`ROUTE_PRIOR` is off by default since 0.2.8; `TAIL_SKIP` also defaults off upstream since 0.1.63) | the tail skip gave no speed here |
+| `STRATA_PREFILL_WARM=0` (since 0.2.19) | no cuBLAS warm-up at the engine's start: 0.2.19 added it on CUDA, and its workspace takes GPU1 69 expert slots (6,987 instead of 7,056) | decode -1.8 % against 0.2.19 as shipped, back to the 0.2.18 speed; reads within 1 % (2026-11-22, N D W WD WD W D N); only the first prompt after a start skips the warm-up |
 | `STRATA_P2P_HANDOFF=1` (since 0.2.17, upstream #6023 opt-in) | the layer split's hand-off buffers sit in the next card's VRAM, written over P2P (a PHB path here, PCIe Gen2 x16), not through pinned host memory | 64K read -0.6 %, decode -0.9 %, 172K unchanged (2026-11-20, N H H N); `STRATA_L2_PF=1` and `STRATA_PREFILL_CPU_SHARE_NT=1` of the same release measured neutral-to-worse here, `STRATA_POOL_DEP` (on by default) neutral |
 | `--prefill auto:16384` | 16,384-token prompt chunks (a bare `auto` keeps 8,192 on a layer split; upstream raises it to 32,768 only on cc 8.0+ single cards) | 64K cold read 34.59 -> 30.21 s (-12.7 %), 172K 87.93 -> 70.40 s (-19.9 %), decode same within noise (2026-11-05); `auto:32768` and `auto:20480` leave an 8-slot ring here and are slower. Like any chunk size change, not bit-exact against 8K (upstream's 0.2.11 notes: near-tie block choices) |
 | `STRATA_PREFILL_CPU_SHARE_MAX=4096`, `STRATA_PREFILL_RING=256` (since 0.2.16; the ring 384 -> 256 later the same day) | the no-MMQ prompt path sizes its staged-chunk buffers up to this limit and takes a 512-slot ring by itself; these keep its loan of cache slots at 0.2.14's | 64K read 29.78 -> 28.58 s, 172K 68.0 -> 65.4 s, ~8K prompt 11.1 -> 9.3 s (2026-11-19, N S S N): 0.2.16 then reads as 0.2.14.1 did, ~8K prompts 12.5 % faster; ring 256 against 384: 64K 28.31 against 28.54 s (-0.8 %), the rest the same; a share limit of 8192 made ~8K prompts 18 % slower |

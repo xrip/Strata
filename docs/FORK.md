@@ -10,7 +10,22 @@ settings measured fastest on one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX
 Qwen3.8-Flash-Next IQ3_S with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until
 2026-11-04).
 
-Base: upstream main of 2026-11-21 (`6e38f588a`, 0.2.18, engine 0.1.64; merged 2026-11-22, 224 commits, no conflicts).
+Base: upstream main of 2026-11-22 (`c6f6427d9`, 0.2.19, engine 0.1.65; merged 2026-11-22, 55 commits, no conflicts).
+Besides the Inkling-2 family (its own engine, engine/src/inkling2) it changes Flash-Next kernels on our path: decode
+gate/up of mode 8 on 16-lane row pairs (exact), the mode-8 down kernel on 8-lane sub-warps (a different float order:
+not the 0.1.64 tokens), the prompt HC-norm in float4 sums, the CPU prompt share's quantization on the pool and its
+pinned buffers at start, PLE gather threads. None of its new tensor-core paths runs here: the INT8 dense GEMM, the
+bit-plane LM head, NVFP4/FP8 and HC-Q8 TC all need cc 8.0+; `STRATA_VERIFY_DEVICE_HITS` turns itself off on a layer
+split. As shipped it decodes 2 % slower here (gate `A N N A`: 5,751 / 5,728 against 5,668 / 5,568 ms a 512 batch, reads
+equal). The cause is its new cuBLAS warm-up at start on CUDA: GPU1 keeps 69 fewer expert slots (6,987 of 7,056).
+Adopted: `STRATA_PREFILL_WARM=0` (`N D W WD WD W D N`: decode 5,627 against 5,732, the 7,056 slots back, reads within
+1 %) - 0.1.65 then reads and decodes as 0.1.64. Fork switch `STRATA_DOWN_SUB8=0` (the 0.2.18 down reduction): decode
+-1.3 % alone, nothing on top of W; off. GDN `tc->tc PASS h=aea57e39`; `mmvq_il_parity` OK; the conversation suites pass;
+the spill persist e2e PASSes. Live since 2026-11-22 (`strata.before-0220` = the 0.1.64 binary). Tried the same day and
+dropped: Tencent Hy4-Flash SQ-64 (0.2.18's `strata-hy4`, fork branch `hy4-avx1-cpuexp`: an AVX1 CPU-expert kernel,
+`--vision-gpu`, turn reuse through saved SWA rings; 14 tok/s on both cards, not usable here).
+
+Base before: upstream main of 2026-11-21 (`6e38f588a`, 0.2.18, engine 0.1.64; merged 2026-11-22, 224 commits, no conflicts).
 The whole update is the new Tencent Hy4-Flash 220B-A12B family as its own engine program (`strata-hy4`, the
 `engine/src/hy4flash` tree with its own build scripts - CUDA graphs, INT8 tensor cores, sm_75/sm_70 paths, SYCL, Metal,
 a zstd-dec `.strata` reader) plus serve fixes (reasoning effort / thinking mode clamped server-side, an image Stop
