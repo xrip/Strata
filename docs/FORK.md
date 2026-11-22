@@ -10,7 +10,17 @@ settings measured fastest on one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX
 Qwen3.8-Flash-Next IQ3_S with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until
 2026-11-04).
 
-Base: upstream main of 2026-11-20 (`3142b66b9`, 0.2.17, engine 0.1.63; merged 2026-11-20, 277 commits, no conflicts).
+Base: upstream main of 2026-11-21 (`6e38f588a`, 0.2.18, engine 0.1.64; merged 2026-11-22, 224 commits, no conflicts).
+The whole update is the new Tencent Hy4-Flash 220B-A12B family as its own engine program (`strata-hy4`, the
+`engine/src/hy4flash` tree with its own build scripts - CUDA graphs, INT8 tensor cores, sm_75/sm_70 paths, SYCL, Metal,
+a zstd-dec `.strata` reader) plus serve fixes (reasoning effort / thinking mode clamped server-side, an image Stop
+race). Nothing in the Qwen3.8-Flash-Next engine source we build changed - `engine/CMakeLists.txt` does not reference
+the new files - so 0.1.64 is 0.1.63 with a new version line; every change near our start line is fenced by
+`is_hy4(cfg)`. Not for this box: Hy4-Flash is a 220B class model and its CPU expert kernels want AVX2/AVX-512 (this
+box is AVX1). GDN `tc->tc PASS h=aea57e39` (bitwise as 0.1.63); `mmvq_il_parity` OK; the conversation suites and the
+14 monitor tests pass; the speed gate (`~/opt-avx1/ab_0218b.sh`, `A N N A`) pending a free window.
+
+Base before: upstream main of 2026-11-20 (`3142b66b9`, 0.2.17, engine 0.1.63; merged 2026-11-20, 277 commits, no conflicts).
 Reads and decode as 0.2.16 at the same loan - the new `--prefill auto:N` pricing did not move it (the table "Measured
 2026-11-20"). The CPU prompt share is armed by default on a two-card layer split now (this box armed it already;
 `STRATA_SPLIT_CPU_SHARE=0` is the way back) and the CPU pool's dependency queue `STRATA_POOL_DEP` is on by default;
