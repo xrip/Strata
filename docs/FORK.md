@@ -10,7 +10,25 @@ settings measured fastest on one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX
 Qwen3.8-Flash-Next IQ3_S with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until
 2026-11-04).
 
-Base: upstream 0.2.20 (`6a6db7ff5`, upstream main of 2026-11-23, engine 0.1.66; merged 2026-11-24, 97 commits, 5
+Base: upstream 0.2.21 (`d46f5f268`, upstream main of 2026-11-24, engine 0.1.67; merged 2026-11-24, 276 commits, 2
+conflicts). Almost all of it is the Inkling-2 engine (its own program). On our path: #6833 drops a parked snapshot whose live
+tokens are a prefix of the outgoing ones, in RAM and on the SSD tier; the fork's older-copies rule (#3404) stays beside it
+(`drop_superseded` takes both; the conflicts were there), and the "dropped superseded snapshot" line now names the rule
+(`checkpoint`, `prefix`, `share90` = what only #3404 drops, `prefix on SSD`) so the live log shows what #3404 still
+adds; the prompt HC norm's vector path keeps the scalar sum-of-squares order again (#6776); the #4870 adaptive curve stays
+on for CUDA (`STRATA_ADAPT_MID=0` turns it off); the server stops restarting an engine that died 3 times in 10 minutes.
+Nothing to adapt to sm_75 (the new kernels are Inkling's). GDN `tc->tc PASS h=aea57e39`; `mmvq_il_parity` OK; the
+conversation suites (14,410 / 164 checks) and 6 rule tests pass. Gate `chunk.sh A N N A` (A = 0.1.66, the live config):
+
+| Arm | 64K read | 172K read | decode, ms a 512 batch | ms per verify window |
+|---|---:|---:|---:|---:|
+| A: 0.1.66 | 27.71 / 28.24 s | 64.00 / 65.31 s | 5,454 / 5,480 | 30.17 / 30.16 |
+| N: 0.1.67 | 28.23 / 28.24 s | 65.24 / 65.53 s | 5,627 / 5,555 | 30.02 / 29.73 |
+
+Reads +0.9 % / +1.1 %, inside A's own spread (1.9 % / 2.0 % between its two starts); decode per verify window -1 % (the
+512-token times follow the accepted drafts, the texts differ): equal. Live since 2026-11-24 (`strata.before-0222` = 0.1.66).
+
+Base before: upstream 0.2.20 (`6a6db7ff5`, upstream main of 2026-11-23, engine 0.1.66; merged 2026-11-24, 97 commits, 5
 conflicts). Almost all of it is other hardware and models (Inkling-2 and Hy4-Flash, SYCL, Metal, HIP RDNA, NVFP4, sm_70,
 8-12 GB cards). On our path: the mode-8 down kernel is back on 0.2.18's 32-lane sum for our IQ4_NL / Q2_0 rows (the fork
 switch `STRATA_DOWN_SUB8` is gone with it); IQ2_XS / IQ3_XXS gate/up read their codebook from shared memory (integer
