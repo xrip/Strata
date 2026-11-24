@@ -349,8 +349,9 @@ public:
             ok = session_file_write(ns_.file_for(serial, k).string(), k ? image.stage_images[k - 1] : image, id, n, error);
             written += n;
         }
-        if (!ok) remove_files(e);
-        if (ok) {
+        if (!ok) {
+            remove_files(e);
+        } else {
             e.bytes = written; e.cvec = image.cvec;
             e.live = stub(image.live);
             for (const auto& c : image.checkpoints) e.checkpoints.push_back(stub(c));
@@ -398,18 +399,16 @@ public:
     /// unchanged and the entry is gone (or was not there).  The files are read outside the lock: the entry leaves the list first.
     bool take_serial(uint64_t serial, const SessionFileIdentity& id, const SessionReadLimits& limits, SavedConversation& out,
                      std::string& error) {
-        std::filesystem::path f;
         Entry e;
         {
             std::lock_guard<std::mutex> lk(mu_);
             const size_t i = index_locked(serial);
             if (i == SIZE_MAX) { error = "no such SSD entry"; return false; }
-            f = entries_[i].file;
-            e.serial = serial; e.file = f; e.parts = entries_[i].parts;
+            e.serial = serial; e.file = entries_[i].file; e.parts = entries_[i].parts;
             if (ns_.persistent()) {   // kept: a restart finds it again; the next spill that extends it replaces it
                 entries_[i].used = ++tick_;
                 std::error_code ec;
-                std::filesystem::last_write_time(meta_path(f), std::filesystem::file_time_type::clock::now(), ec);
+                std::filesystem::last_write_time(meta_path(e.file), std::filesystem::file_time_type::clock::now(), ec);
             } else {
                 budget_.drop(entries_[i].bytes);
                 entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
@@ -420,7 +419,7 @@ public:
         stage_limits.admit = limits.admit;
         SavedConversation image;
         bool ok = true;
-        for (size_t k = 0; ok && k < e.parts; ++k) {
+        for (size_t k = 0; k < e.parts; ++k) {
             SavedConversation part;
             size_t read = 0;
             ok = session_file_read(ns_.file_for(serial, k).string(), id, part, read, error, k ? stage_limits : limits);
@@ -602,19 +601,17 @@ private:
                 good = good && (split || b.compare(0, 4, "SPM1") == 0);
                 if (good) {
                     r.at = 4;
-                    f.e.serial = serial;
                     f.e.parts = split ? r.pod<uint32_t>() : 1;
                     const uint64_t model = r.pod<uint64_t>(), config = r.pod<uint64_t>();
                     f.e.cvec = r.pod<uint8_t>() != 0;
                     f.e.bytes = r.pod<uint64_t>();
+                    good = !r.bad && f.e.parts >= 1 && f.e.parts <= 64 && model == id.model && config == id.config;
                     uint64_t on_disk = 0;   // every stage's file is there and together they are the size written
-                    for (size_t k = 0; good && k < f.e.parts && f.e.parts <= 64; ++k) {
-                        const uint64_t n = fs::file_size(ns_.file_for(serial, k), e2);
+                    for (size_t k = 0; good && k < f.e.parts; ++k) {
+                        on_disk += fs::file_size(ns_.file_for(serial, k), e2);
                         good = !e2;
-                        on_disk += n;
                     }
-                    good = good && !r.bad && f.e.parts >= 1 && f.e.parts <= 64 && model == id.model && config == id.config &&
-                           on_disk == f.e.bytes && get_ckpt(r, f.e.live, f.e.bytes);
+                    good = good && on_disk == f.e.bytes && get_ckpt(r, f.e.live, f.e.bytes);
                     const uint64_t nc = good ? r.pod<uint64_t>() : 0;
                     for (uint64_t i = 0; good && i < nc; ++i) { ConversationCheckpoint c; good = get_ckpt(r, c, f.e.bytes); if (good) f.e.checkpoints.push_back(std::move(c)); }
                     good = good && !r.bad;
