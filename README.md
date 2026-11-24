@@ -8,8 +8,8 @@
 ## This fork: Strata on 2x CMP 50HX
 
 [xrip/Strata](https://github.com/xrip/Strata) is [Niko1221/Strata](https://github.com/Niko1221/Strata) with four patches
-(upstream's SSD tier of the conversation cache on a layer split and across restarts, `--conversation-spill-persist on`,
-which replaced the fork's own disk tier #1937; the older-copies rule, #3404; the tensor-core GDN scan on sm_75, #4876; 5-8
+(upstream's SSD tier of the conversation cache on a layer split and saved at QUIT, on top of upstream's
+`--conversation-spill-persist`; it replaced the fork's own disk tier #1937; the older-copies rule, #3404; the tensor-core GDN scan on sm_75, #4876; 5-8
 row decode windows on the interleaved kernels, #5137; the int8 IQ4 prompt kernel on sm_75, #5498, went with upstream's
 MMQ in 0.2.16; the tool search patch is upstream's since 0.2.10) and the settings measured fastest on one box: 2x Xeon E5-2670 v2 (AVX only, 2 NUMA
 nodes), 80 GB DDR3-1866, 2x CMP 50HX (Turing sm_75, 20 GB) on a layer split over PCIe 2.0 x16, a third CMP 50HX
@@ -49,7 +49,7 @@ The engine is built from `engine/` (`-DSTRATA_ISA_FLOOR=avx`, `-DCMAKE_CUDA_ARCH
         "STRATA_SIDE_MIXER": "2", "STRATA_ATTN_DAILY": "1", "STRATA_B6_MMVQ_ROWS": "1",
         "STRATA_SPLIT_MTP_BATCH": "1", "STRATA_PREFILL_LAYER_MAJOR": "0", "STRATA_GDN_TC": "2",
         "STRATA_ROUTE_TAIL_SKIP": "0", "STRATA_ROUTE_PRIOR": "0", "STRATA_PCIE_AUTO_SPLIT": "0",
-        "STRATA_P2P_HANDOFF": "1", "STRATA_PREFILL_WARM": "0",
+        "STRATA_P2P_HANDOFF": "1", "STRATA_PREFILL_WARM": "0", "STRATA_NUMA_ARENA": "1",
         "STRATA_PF_GROUP_SCRATCH": "1", "STRATA_PF_HC_REGION": "1", "STRATA_KV_PREFETCH": "1",
         "STRATA_PREFILL_ROUTED_STREAM": "1", "STRATA_MTP_ROOM_MIN": "16384", "STRATA_PREFILL_RING": "256"},
 "args": ["--pack", ".../packs/swift-iq3_s", "--native", ".../Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
@@ -60,7 +60,7 @@ The engine is built from `engine/` (`-DSTRATA_ISA_FLOOR=avx`, `-DCMAKE_CUDA_ARCH
          "--kv", "int8", "--kv-resident", "32768",
          "--conversation-cache-mib", "10240", "--conversation-cache-slots", "16", "--conversation-cache-min-tokens", "32768",
          "--conversation-cache-min-free-mib", "1536",
-         "--conversation-spill-dir", "/mnt/hdd12tb/conversation-spill", "--conversation-spill-persist", "on",
+         "--conversation-spill-dir", "/mnt/hdd12tb/conversation-spill", "--conversation-spill-persist",
          "--conversation-cache-rewind-keep", "8192",
          "--prompt-cache-spread", "--prompt-cache", "8", "--vision"],
 "vision": {"exe": ".../build-vision-cuda/bin/strata-vision", "gpu": true, "cuda_device": 2, "threads": 20, ...}

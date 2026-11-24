@@ -1,8 +1,8 @@
 # xrip/Strata: upstream Strata for a box with 2x CMP 50HX
 
 This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with four patches: upstream's SSD tier of the
-conversation cache with a layer split and conversations kept across restarts (`--conversation-spill-persist on`; it
-replaced the fork's own disk tier, PR #1937), the older-copies rule of the conversation cache (#3404), the GDN scan on
+conversation cache with a layer split and the parked conversations written at QUIT (on top of upstream's own
+`--conversation-spill-persist` since 0.2.20; it replaced the fork's own disk tier, PR #1937), the older-copies rule of the conversation cache (#3404), the GDN scan on
 sm_75 (#4876) and 5-8 row decode windows on the interleaved kernels (#5137). The fifth, upstream's int8 IQ4 prompt
 kernel on sm_75 (#5498), went with upstream's MMQ path in 0.2.16; tool search is upstream's since 0.2.10. And the
 settings measured fastest on one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866,
@@ -10,7 +10,44 @@ settings measured fastest on one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX
 Qwen3.8-Flash-Next IQ3_S with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until
 2026-11-04).
 
-Base: upstream main of 2026-11-22 (`c6f6427d9`, 0.2.19, engine 0.1.65; merged 2026-11-22, 55 commits, no conflicts).
+Base: upstream 0.2.20 (`6a6db7ff5`, upstream main of 2026-11-23, engine 0.1.66; merged 2026-11-24, 97 commits, 5
+conflicts). Almost all of it is other hardware and models (Inkling-2 and Hy4-Flash, SYCL, Metal, HIP RDNA, NVFP4, sm_70,
+8-12 GB cards). On our path: the mode-8 down kernel is back on 0.2.18's 32-lane sum for our IQ4_NL / Q2_0 rows (the fork
+switch `STRATA_DOWN_SUB8` is gone with it); IQ2_XS / IQ3_XXS gate/up read their codebook from shared memory (integer
+work, exact); the int8 tensor-core dense GEMV now runs on sm_75 for 9-16 columns (not our 5-column windows); a KV page
+guard in the attention kernels; and #4870: at 15-65 % expert coverage the adaptive tier swaps more (every 2, 192
+swaps, decay 0.92). Here coverage is 64.2 % (15,769 of 24,576 slots), so it is on. Upstream also added its own
+`--conversation-spill-persist` (#6538: a folder `fp-<model fingerprint>`, `.meta` index files, entries adopted at
+start, LRU, an entry stays after a read). It refuses a layer split's conversations and does not write the RAM-parked
+ones at QUIT, so the fork's patch is rebased onto it (below). The flag has no value now: the config drops the `on`.
+GDN `tc->tc PASS h=aea57e39`; `mmvq_il_parity` OK; `conversation_spill_test` (110 checks), `conversation_cache_test`
+and 7 rule tests pass; the spill persist e2e PASSes (3 conversations, 6 files, 5.7 GiB saved at SIGTERM in 9.2 s, back
+after a restart in 2.7 / 3.1 / 8.9 s with the same answers; L cold 64.7 s). The server now answers 404 to a request
+that names a Strata model that is not loaded (a `qwen3.8-flash-next...` name other than the loaded one); other names
+pass as before.
+
+The speed gate (`~/opt-avx1/ab_0220.sh`, `chunk.sh A N P M V V M P N A`, the live config in every arm; decode = mean
+of 6 x 512 tokens at ~8K):
+
+| Arm | 64K read | 172K read | decode, ms a 512 batch |
+|---|---:|---:|---:|
+| A: 0.1.65 (live) | 27.55 / 28.07 s | 62.71 / 65.05 s | 5,675 / 5,640 |
+| N: 0.1.66 | 27.91 / 28.27 s | 64.28 / 64.82 s | 5,716 / 5,702 |
+| P: N + `--adapt-every 4 --adapt-swaps 96 --adapt-decay 0.7` (before #4870) | 28.13 / 28.16 s | 64.86 / 65.16 s | 5,653 / 5,653 |
+| **M: N + `STRATA_NUMA_ARENA=1`** | 28.00 / 28.03 s | 64.70 / 64.86 s | **5,419 / 5,483 (-4.4 %)** |
+| V: N + `STRATA_GR_V70=2` (Volta's token-split HC read on sm_75) | 28.36 / 28.32 s | 64.87 / 64.70 s | 5,772 / 5,743 |
+
+N against A: +1 % on all three, inside A's own spread (A's two 172K reads 3.7 % apart): equal. #4870 against the
+pinned old values: the same (P -1 % decode, +0.4 % reads: noise), so nothing is pinned. Adopted:
+`STRATA_NUMA_ARENA=1` (0.2.20, Linux, no GPU gate): before `cudaHostRegister` the first half of each expert's
+gate/up/down rows goes to node 0 and the second half to node 1, as the pool's two NUMA slices split the rows, so each
+socket's workers read their own memory (4 KB pages, 3.6 s more at start; the same values, only placement). Decode
+-4.4 % against N in both starts, reads equal. Dropped: `STRATA_GR_V70` widened to sm_75 (its own start-up check
+passed bit for bit on both cards; decode 0.5-1 % slower, reads 0.3 % slower). Not tried, no gain expected here:
+`STRATA_Q8_V70` (needs Q8_0 dense weights), `STRATA_SM86_DOWN_WS` (EXPDEC-like, measured slower before),
+`STRATA_L3_PF` (AVX2 and one card), `STRATA_PEER_HEAD_SPLIT` (peer mode only), the batch-only #6547 / #6548.
+
+Base before: upstream main of 2026-11-22 (`c6f6427d9`, 0.2.19, engine 0.1.65; merged 2026-11-22, 55 commits, no conflicts).
 Besides the Inkling-2 family (its own engine, engine/src/inkling2) it changes Flash-Next kernels on our path: decode
 gate/up of mode 8 on 16-lane row pairs (exact), the mode-8 down kernel on 8-lane sub-warps (a different float order:
 not the 0.1.64 tokens), the prompt HC-norm in float4 sums, the CPU prompt share's quantization on the pool and its
@@ -141,18 +178,20 @@ an exiting engine's memory (#4051), and the server's tool-call repairs (`tool_ca
 `STRATA_ROUTE_PRIOR` is off by default again (it never turned on by itself on these 20 GB cards). The fork's history before this base (the old patches, every sync and
 A/B since 2026-10-10) is the tag `fork-main-2026-10-28`.
 
-## The patch: upstream's SSD tier, on a layer split and across restarts
+## The patch: upstream's SSD tier, on a layer split and saved at QUIT
 
 Upstream's SSD tier of the conversation cache (`conversation_spill.hpp`, 0.2.16) writes a conversation the RAM cache
 evicts, or one its RAM floor refuses, as a session file in the background and reads it back when a request continues
 it; only a conversation whose re-read costs more than the disk's round trip goes there (speeds measured as it runs).
-Upstream's tier takes one stage only and removes every file at the next start. The patch:
-- a layer split: an entry is one file per stage (`conv-N.session`, `conv-N.s1.session`); a later stage's file is read
-  with the RAM check only and every stage image is validated against its runtime as before;
-- `--conversation-spill-persist on`: the folder is `<--conversation-spill-dir>/kept`, held by its lock (one engine),
-  not removed at the end; an index per entry (`conv-N.idx`: the files' identity, the tokens and pictures it matches on)
-  lets the next start take the entries of the same model, engine version and settings in without reading them, and
-  everything else in the folder goes at that start. QUIT parks the current conversation and writes every parked one
+Since 0.2.20 upstream's `--conversation-spill-persist` keeps the tier across restarts (the folder
+`<--conversation-spill-dir>/fp-<model fingerprint>`, a `conv-N.meta` index beside each entry, the entries of the same
+model and settings adopted at start, the least recently used one goes first). Upstream's tier takes one stage only. The
+patch adds:
+- a layer split: an entry is one file per stage (`conv-N.session`, `conv-N.s1.session`); its index is `SPM2` with the
+  file count (a one-stage entry keeps upstream's `SPM1` bytes); at start an entry is adopted only when every stage file
+  is there and they add up to the size written; a later stage's file is read with the RAM check only and every stage
+  image is validated against its runtime as before;
+- with `--conversation-spill-persist`, QUIT parks the current conversation and writes every RAM-parked one to the tier
   (the engine ignores SIGINT, SIGTERM and SIGHUP meanwhile and ends through its stdin; the server waits 300 s).
 The Monitor's cache card shows what is on the disk. The older-copies rule (#3404): an older, shorter copy of the
 outgoing conversation that shares at least 90 % of its tokens is dropped, not parked or written.
@@ -477,7 +516,7 @@ tested. Tools on the box: `~/opt-avx1/quick.sh` (this table), `perf.sh` (the idl
 ## Syncing
 
 `git fetch upstream && git merge upstream/main` on `main`; build from `engine/`. The patch lives in the
-`conversation_spill.hpp` changes (`kept`, `parts`, the index), the `--conversation-spill-persist` blocks of
+`conversation_spill.hpp` changes (`parts`, `SPM2`, `remove_files`), the `--conversation-spill-persist` blocks of
 `generate.cpp`, `conversation_cache.hpp` (`superseded_at`, the 90 % rule) and the server's cache card
 (`ConvCacheLog.ON_SSD`, `quit_s`); `conversation_spill_test` checks it. The fourth: `Q81Il` (`PLANES`) and `il_pm_at`
 (re-run `mmvq_il_parity` after a sync that touches `native_mmvq.cu`). The third patch: `gdn_tc.cuh` and `gdn_rec_tc`;
