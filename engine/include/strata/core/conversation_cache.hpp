@@ -533,9 +533,7 @@ public:
     // checkpoints older than that one.  A subagent's successive turns parked one such copy each, and make_room's
     // oldest-first eviction then pushed the parent conversation out after `slots` turns.  An entry without
     // checkpoints, or whose deepest checkpoint the outgoing chain does not hold (another conversation that only
-    // shares the system prompt's root with it), is kept.  Also superseded (#3404): an older, shorter state of this
-    // conversation with at most a tenth of its tokens not in the outgoing ones (rewritten turns back, when the
-    // chain's spread checkpoints no longer hold one near its end).  Returns how many were dropped.
+    // shares the system prompt's root with it), is kept.  Returns how many were dropped.
     // An entry whose LIVE tokens are a prefix of (or equal to) `ids` (same pictures, same steering, no pinned shared
     // prefix) is superseded as well: the conversation only appends, so the longer snapshot serves every resume the older
     // one could.  Without this the older snapshots of a long agent conversation (whose deepest checkpoint the new chain
@@ -557,17 +555,22 @@ public:
     }
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
                            const std::vector<ConversationCheckpoint>& checkpoints, bool cvec,
-                           std::vector<size_t>* dropped_tokens = nullptr, std::vector<const char*>* rules = nullptr) {
+                           std::vector<size_t>* dropped_tokens = nullptr) {
+        auto held = [&](const ConversationCheckpoint& c) {
+            if (c.ids == ids && c.imgs == images) return true;
+            for (const auto& k : checkpoints)
+                if (k.ids == c.ids && k.imgs == c.imgs) return true;
+            return false;
+        };
         size_t dropped = 0;
         for (size_t i = 0; i < entries_.size();) {
             const auto& e = entries_[i];
-            bool by_chain = false;
-            const bool at = superseded_at(e, ids, images, checkpoints, cvec, &by_chain) > 0;
-            const bool prefix = e.cvec == cvec && live_extended_by(e, ids, images);
-            if (!(guarded_ != 0 && serials_[i] == guarded_) && (at || prefix)) {
+            const ConversationCheckpoint* deepest = nullptr;
+            for (const auto& c : e.checkpoints)
+                if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+            if (e.cvec == cvec && !(guarded_ != 0 && serials_[i] == guarded_) &&
+                ((deepest && !deepest->ids.empty() && held(*deepest)) || live_extended_by(e, ids, images))) {
                 if (dropped_tokens) dropped_tokens->push_back(e.live.ids.size());
-                // which rule: #342's checkpoint chain, #6833's live prefix, or only #3404's 90 % share
-                if (rules) rules->push_back(by_chain ? "checkpoint" : prefix ? "prefix" : "share90");
                 bytes_ -= e.bytes();
                 erase(i);
                 ++dropped;
@@ -614,9 +617,15 @@ public:
                                 const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) const {
         size_t longest = 0;
         for (const auto& e : entries_) {
-            const size_t at = superseded_at(e, ids, images, checkpoints, cvec);
-            if (at > 0) longest = std::max(longest, at);
-            else if (e.cvec == cvec && live_extended_by(e, ids, images)) longest = std::max(longest, e.live.ids.size());   // (no checkpoint chain to report)
+            if (e.cvec != cvec) continue;
+            const ConversationCheckpoint* deepest = nullptr;
+            for (const auto& c : e.checkpoints)
+                if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+            bool holds = deepest && !deepest->ids.empty() && deepest->ids == ids && deepest->imgs == images;
+            for (const auto& k : checkpoints)
+                if (deepest && !deepest->ids.empty() && !holds && k.ids == deepest->ids && k.imgs == deepest->imgs) holds = true;
+            if (holds) longest = std::max(longest, deepest->ids.size());
+            else if (live_extended_by(e, ids, images)) longest = std::max(longest, e.live.ids.size());   // (no checkpoint chain to report)
         }
         return longest;
     }
@@ -659,23 +668,6 @@ public:
     }
 
 private:
-    // How many of `e`'s tokens the outgoing conversation holds when it supersedes `e` (drop_superseded), else 0.
-    static size_t superseded_at(const SavedConversation& e, const std::vector<int32_t>& ids,
-                                const std::vector<ConversationImageKey>& images,
-                                const std::vector<ConversationCheckpoint>& checkpoints, bool cvec, bool* by_chain = nullptr) {
-        const ConversationCheckpoint* deepest = nullptr;
-        for (const auto& c : e.checkpoints)
-            if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-        if (e.cvec != cvec || !deepest || deepest->ids.empty()) return 0;
-        bool held = deepest->ids == ids && deepest->imgs == images;
-        for (const auto& k : checkpoints)
-            if (!held && k.ids == deepest->ids && k.imgs == deepest->imgs) held = true;
-        if (by_chain) *by_chain = held;
-        if (held) return deepest->ids.size();
-        const auto& own = e.live.ids;
-        const size_t shared = std::mismatch(own.begin(), own.end(), ids.begin(), ids.end()).first - own.begin();
-        return ids.size() > own.size() && own.size() - shared <= own.size() / 10 ? shared : 0;
-    }
     // gives the pool's idle bytes back as far as images + idle + `incoming` would pass the budget (images alone never
     // need more than the loop in make_room leaves them)
     void trim_pool(size_t incoming_and_held) {

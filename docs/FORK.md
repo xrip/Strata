@@ -1,8 +1,8 @@
 # xrip/Strata: upstream Strata for a box with 2x CMP 50HX
 
-This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with four patches: upstream's SSD tier of the
+This fork is [Niko1221/Strata](https://github.com/Niko1221/Strata) with three patches: upstream's SSD tier of the
 conversation cache with a layer split and the parked conversations written at QUIT (on top of upstream's own
-`--conversation-spill-persist` since 0.2.20; it replaced the fork's own disk tier, PR #1937), the older-copies rule of the conversation cache (#3404), the GDN scan on
+`--conversation-spill-persist` since 0.2.20; it replaced the fork's own disk tier, PR #1937), the GDN scan on
 sm_75 (#4876) and 5-8 row decode windows on the interleaved kernels (#5137). The fifth, upstream's int8 IQ4 prompt
 kernel on sm_75 (#5498), went with upstream's MMQ path in 0.2.16; tool search is upstream's since 0.2.10. And the
 settings measured fastest on one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX only, 2 NUMA nodes), 80 GB DDR3-1866,
@@ -10,12 +10,17 @@ settings measured fastest on one machine: 2x Xeon E5-2670 v2 (Ivy Bridge-EP, AVX
 Qwen3.8-Flash-Next IQ3_S with the FP8 per-layer token table (the original IQ3_XXS until 2026-10-31, Swift IQ3_XXS until
 2026-11-04).
 
+Dropped 2026-11-24: the older-copies rule (#3404: an older, shorter copy of the outgoing conversation that shares at least
+90 % of its tokens is dropped). Measured on the live 0.1.67 with the "dropped superseded snapshot" line naming its rule: a
+multi-agent Claude Code session, ~2 h, 266 requests, 167 parks / 168 restores, 6 evictions, 6 conversations written to
+the disk tier - not one copy dropped by any rule (#342's checkpoint, #6833's prefix, #3404's 90 % share). A restore takes
+the conversation's entry out of the cache, so an older copy of it is not parked beside the new one any more; the
+October case #3404 was written for does not happen on this engine. The fork is upstream there now.
+
 Base: upstream 0.2.21 (`d46f5f268`, upstream main of 2026-11-24, engine 0.1.67; merged 2026-11-24, 276 commits, 2
 conflicts). Almost all of it is the Inkling-2 engine (its own program). On our path: #6833 drops a parked snapshot whose live
-tokens are a prefix of the outgoing ones, in RAM and on the SSD tier; the fork's older-copies rule (#3404) stays beside it
-(`drop_superseded` takes both; the conflicts were there), and the "dropped superseded snapshot" line now names the rule
-(`checkpoint`, `prefix`, `share90` = what only #3404 drops, `prefix on SSD`) so the live log shows what #3404 still
-adds; the prompt HC norm's vector path keeps the scalar sum-of-squares order again (#6776); the #4870 adaptive curve stays
+tokens are a prefix of the outgoing ones, in RAM and on the SSD tier (the 2 conflicts were with the fork's older-copies
+rule, #3404, kept beside it at first; dropped the same day, above); the prompt HC norm's vector path keeps the scalar sum-of-squares order again (#6776); the #4870 adaptive curve stays
 on for CUDA (`STRATA_ADAPT_MID=0` turns it off); the server stops restarting an engine that died 3 times in 10 minutes.
 Nothing to adapt to sm_75 (the new kernels are Inkling's). GDN `tc->tc PASS h=aea57e39`; `mmvq_il_parity` OK; the
 conversation suites (14,410 / 164 checks) and 6 rule tests pass. Gate `chunk.sh A N N A` (A = 0.1.66, the live config):
@@ -211,8 +216,7 @@ patch adds:
   image is validated against its runtime as before;
 - with `--conversation-spill-persist`, QUIT parks the current conversation and writes every RAM-parked one to the tier
   (the engine ignores SIGINT, SIGTERM and SIGHUP meanwhile and ends through its stdin; the server waits 300 s).
-The Monitor's cache card shows what is on the disk. The older-copies rule (#3404): an older, shorter copy of the
-outgoing conversation that shares at least 90 % of its tokens is dropped, not parked or written.
+The Monitor's cache card shows what is on the disk.
 
 Measured 2026-11-19 (`~/opt-avx1/spill_e2e.sh`, the live model and settings, one RAM slot, deterministic): A and B
 (41.8K tokens) and L (165.6K) read; A went to the disk while the engine ran (2.6 s in the background), B and L at the

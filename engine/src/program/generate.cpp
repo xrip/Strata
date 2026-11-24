@@ -14287,8 +14287,7 @@ int main(int argc, char** argv) {
             // nothing the outgoing chain does not, apart from the tail this conversation rewrote)
             {
                 std::vector<size_t> gone;
-                std::vector<const char*> rule;
-                const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec, &gone, &rule);
+                const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec, &gone);
                 if (dropped)
                     std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
                                  "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
@@ -14297,11 +14296,10 @@ int main(int argc, char** argv) {
                 if (spill.enabled()) {
                     const auto on_ssd = spill.drop_superseded(src.ids, src.imgs, src.cvec);
                     gone.insert(gone.end(), on_ssd.begin(), on_ssd.end());
-                    rule.insert(rule.end(), on_ssd.size(), "prefix on SSD");
                 }
-                for (size_t k = 0; k < gone.size(); ++k)
-                    std::fprintf(stderr, "strata serve: conversation cache: dropped superseded snapshot %zu tokens (extended by %zu; %s)\n",
-                                 gone[k], src.ids.size(), rule[k]);
+                for (const size_t n : gone)
+                    std::fprintf(stderr, "strata serve: conversation cache: dropped superseded snapshot %zu tokens (extended by %zu)\n",
+                                 n, src.ids.size());
             }
             // A layer split parks one image per stage: the first stage's (with the draft layer's K/V) and one per
             // later stage (without it - the draft ring is saved once).  The checkpoints are MOVED apart into their

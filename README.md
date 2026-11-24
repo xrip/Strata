@@ -7,9 +7,9 @@
 
 ## This fork: Strata on 2x CMP 50HX
 
-[xrip/Strata](https://github.com/xrip/Strata) is [Niko1221/Strata](https://github.com/Niko1221/Strata) with four patches
+[xrip/Strata](https://github.com/xrip/Strata) is [Niko1221/Strata](https://github.com/Niko1221/Strata) with three patches
 (upstream's SSD tier of the conversation cache on a layer split and saved at QUIT, on top of upstream's
-`--conversation-spill-persist`; it replaced the fork's own disk tier #1937; the older-copies rule, #3404; the tensor-core GDN scan on sm_75, #4876; 5-8
+`--conversation-spill-persist`; it replaced the fork's own disk tier #1937; the tensor-core GDN scan on sm_75, #4876; 5-8
 row decode windows on the interleaved kernels, #5137; the int8 IQ4 prompt kernel on sm_75, #5498, went with upstream's
 MMQ in 0.2.16; the tool search patch is upstream's since 0.2.10) and the settings measured fastest on one box: 2x Xeon E5-2670 v2 (AVX only, 2 NUMA
 nodes), 80 GB DDR3-1866, 2x CMP 50HX (Turing sm_75, 20 GB) on a layer split over PCIe 2.0 x16, a third CMP 50HX
