@@ -324,55 +324,27 @@ public:
     bool put(const SavedConversation& image, const SessionFileIdentity& id, std::string& error, uint64_t* serial_out = nullptr) {
         const size_t parts = 1 + image.stage_images.size();
         const uint64_t need = (uint64_t) image.bytes() + (uint64_t(parts) << 20);   // the payload and the files' own tables
-        uint64_t serial = 0;
-        std::filesystem::path f;
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            if (!enabled_locked()) { error = "the SSD tier is off"; return false; }
-            if (need > budget_.cap) { error = "larger than the whole SSD tier"; return false; }
-            while (!budget_.reserve(need)) {
-                if (entries_.empty()) { error = "no room in the SSD tier"; return false; }
-                size_t victim = SIZE_MAX;   // an entry this one extends goes first (it would go anyway), then the least recently used
-                for (size_t i = 0; i < entries_.size() && victim == SIZE_MAX; ++i)
-                    if (superseded_by(entries_[i], image)) victim = i;
-                drop_locked(victim != SIZE_MAX ? victim : lru_locked());
-            }
-            serial = next_serial_++;
-            f = ns_.file_for(serial);
-        }
-        Entry e;
-        e.serial = serial; e.file = f; e.parts = parts;
-        bool ok = true;
-        uint64_t written = 0;
-        for (size_t k = 0; ok && k < parts; ++k) {   // (session_file_write writes the image it is given, not its stage images)
-            size_t n = 0;
-            ok = session_file_write(ns_.file_for(serial, k).string(), k ? image.stage_images[k - 1] : image, id, n, error);
-            written += n;
-        }
-        if (!ok) {
-            remove_files(e);
-        } else {
-            e.bytes = written; e.cvec = image.cvec;
-            e.live = stub(image.live);
-            for (const auto& c : image.checkpoints) e.checkpoints.push_back(stub(c));
-        }
-        std::lock_guard<std::mutex> lk(mu_);
-        budget_.finish(need, ok ? written : 0);
-        if (ok && ns_.persistent() && !meta_write(f, e, id)) {
-            remove_files(e);
-            budget_.drop(written);
-            error = "the entry's index file could not be written";
-            return false;
-        }
-        if (!ok) return false;
-        e.used = ++tick_;
-        // the same conversation grown: an entry whose tokens are a prefix of this one's is served by this one in full
-        for (size_t i = entries_.size(); i-- > 0;)
-            if (superseded_by(entries_[i], image)) drop_locked(i);
-        entries_.push_back(std::move(e));
-        while (budget_.over() && entries_.size() > 1) drop_locked(lru_locked());   // (a file larger than its estimate)
-        if (serial_out) *serial_out = serial;
-        return true;
+        // (session_file_write writes the image it is given, not its stage images)
+        return store(image, parts, need, [&](size_t k, const std::string& path, size_t& n, std::string& e) {
+            return session_file_write(path, k ? image.stage_images[k - 1] : image, id, n, e);
+        }, id, error, serial_out);
+    }
+
+    /// The same for a conversation the RAM tier cannot hold, written straight from where it lives, on the caller's thread:
+    /// `meta` holds all but the K/V (its stage images likewise), `sources[k]` the K/V of stage k
+    /// (conversation_snapshot_sources).  Only the running state and the checkpoints pass through RAM.  The caller keeps the
+    /// sessions as they are until this returns.  The files are the same bytes put() writes for the captured image.
+    bool put_streamed(const SavedConversation& meta, const std::vector<std::vector<SessionKvSource>>& sources,
+                      const SessionFileIdentity& id, std::string& error, uint64_t* serial_out = nullptr) {
+        const size_t parts = 1 + meta.stage_images.size();
+        if (sources.size() != parts) { error = "one K/V source list per stage expected"; return false; }
+        uint64_t need = (uint64_t) meta.bytes() + (uint64_t(parts) << 20);
+        for (const auto& layers : sources)
+            for (const auto& layer : layers)
+                for (const size_t n : layer.sizes) need += n;
+        return store(meta, parts, need, [&](size_t k, const std::string& path, size_t& n, std::string& e) {
+            return session_file_write(path, k ? meta.stage_images[k - 1] : meta, sources[k], id, n, e);
+        }, id, error, serial_out);
     }
 
     /// The entry and the prefix it gives `prompt`, by the RAM cache's rule (ConversationCache::best): its live state or a
@@ -397,8 +369,11 @@ public:
     /// Reads entry `serial` back into `out` (the identity checked; the first stage's file bounded by `limits`, a later stage's by
     /// its RAM preflight only - the caller validates every stage image against its runtime) and removes the entry.  False: `out` is
     /// unchanged and the entry is gone (or was not there).  The files are read outside the lock: the entry leaves the list first.
+    /// With `kv` (one target list per stage: conversation_snapshot_targets) the files' K/V is streamed into the targets instead of
+    /// RAM and `out` gets the rest (the RAM check is asked for that part only); on false after a read began, the targets may hold
+    /// part of a file, so the caller must not run the sessions from them.
     bool take_serial(uint64_t serial, const SessionFileIdentity& id, const SessionReadLimits& limits, SavedConversation& out,
-                     std::string& error) {
+                     std::string& error, const std::vector<std::vector<SessionKvTarget>>* kv = nullptr) {
         Entry e;
         {
             std::lock_guard<std::mutex> lk(mu_);
@@ -419,10 +394,13 @@ public:
         stage_limits.admit = limits.admit;
         SavedConversation image;
         bool ok = true;
-        for (size_t k = 0; k < e.parts; ++k) {
+        if (kv && kv->size() != e.parts) { error = "the entry's stage count is not this runtime's"; ok = false; }
+        for (size_t k = 0; ok && k < e.parts; ++k) {
             SavedConversation part;
             size_t read = 0;
-            ok = session_file_read(ns_.file_for(serial, k).string(), id, part, read, error, k ? stage_limits : limits);
+            const std::string path = ns_.file_for(serial, k).string();
+            ok = kv ? session_file_read(path, id, part, (*kv)[k], read, error, k ? stage_limits : limits)
+                    : session_file_read(path, id, part, read, error, k ? stage_limits : limits);
             if (!ok) break;
             if (k == 0) image = std::move(part);
             else image.stage_images.push_back(std::move(part));
@@ -483,6 +461,61 @@ public:
     }
 
 private:
+    /// put() and put_streamed(): `write_part(k, path, written, error)` writes stage k's file.  The entry's keys come from `key`
+    /// (its live state and checkpoints: ids and images only).
+    using WritePart = std::function<bool(size_t part, const std::string& path, size_t& written, std::string& error)>;
+    bool store(const SavedConversation& key, size_t parts, uint64_t need, const WritePart& write_part,
+               const SessionFileIdentity& id, std::string& error, uint64_t* serial_out) {
+        uint64_t serial = 0;
+        std::filesystem::path f;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (!enabled_locked()) { error = "the SSD tier is off"; return false; }
+            if (need > budget_.cap) { error = "larger than the whole SSD tier"; return false; }
+            while (!budget_.reserve(need)) {
+                if (entries_.empty()) { error = "no room in the SSD tier"; return false; }
+                size_t victim = SIZE_MAX;   // an entry this one extends goes first (it would go anyway), then the least recently used
+                for (size_t i = 0; i < entries_.size() && victim == SIZE_MAX; ++i)
+                    if (superseded_by(entries_[i], key)) victim = i;
+                drop_locked(victim != SIZE_MAX ? victim : lru_locked());
+            }
+            serial = next_serial_++;
+            f = ns_.file_for(serial);
+        }
+        Entry e;
+        e.serial = serial; e.file = f; e.parts = parts;
+        bool ok = true;
+        uint64_t written = 0;
+        for (size_t k = 0; ok && k < parts; ++k) {
+            size_t n = 0;
+            ok = write_part(k, ns_.file_for(serial, k).string(), n, error);
+            written += n;
+        }
+        if (!ok) {
+            remove_files(e);
+        } else {
+            e.bytes = written; e.cvec = key.cvec;
+            e.live = stub(key.live);
+            for (const auto& c : key.checkpoints) e.checkpoints.push_back(stub(c));
+        }
+        std::lock_guard<std::mutex> lk(mu_);
+        budget_.finish(need, ok ? written : 0);
+        if (ok && ns_.persistent() && !meta_write(f, e, id)) {
+            remove_files(e);
+            budget_.drop(written);
+            error = "the entry's index file could not be written";
+            return false;
+        }
+        if (!ok) return false;
+        e.used = ++tick_;
+        // the same conversation grown: an entry whose tokens are a prefix of this one's is served by this one in full
+        for (size_t i = entries_.size(); i-- > 0;)
+            if (superseded_by(entries_[i], key)) drop_locked(i);
+        entries_.push_back(std::move(e));
+        while (budget_.over() && entries_.size() > 1) drop_locked(lru_locked());   // (a file larger than its estimate)
+        if (serial_out) *serial_out = serial;
+        return true;
+    }
     bool enabled_locked() const { return ns_.is_open() && budget_.cap > 0; }
     size_t index_locked(uint64_t serial) const {
         for (size_t i = 0; i < entries_.size(); ++i)

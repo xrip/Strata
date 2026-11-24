@@ -2,16 +2,19 @@
 #include "strata/core/conversation_spill.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <thread>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 using namespace strata::core;
 namespace fs = std::filesystem;
@@ -484,6 +487,201 @@ int main() {
             check(sp.open(kroot, 64 << 20, err, nullptr, &other, &adopted) && adopted == 0 && !fs::exists(pdir / "conv-1.s1.session"),
                   "other settings: none adopted, their stage files went");
             sp.close();
+        }
+    }
+    {   // put_streamed: the K/V read from where it lives (the GPUs; here an image's own buffers) gives the files put() gives;
+        // take_serial with K/V targets streams the files' K/V into them and the rest into RAM
+        auto pattern = [](size_t n, uint8_t seed) {
+            ConversationBuffer b;
+            b.resize(n);
+            b.visit(0, n, [&](uint8_t* p, size_t c, size_t at) {
+                for (size_t i = 0; i < c; ++i) p[i] = uint8_t((at + i) * 131u + seed);
+                return true;
+            });
+            return b;
+        };
+        auto layers = [&](SavedConversation& s, uint8_t seed, bool big) {
+            for (int layer = 0; layer < 2; ++layer) {
+                ConversationKv kv;
+                kv.format = 2 + layer; kv.cells = 1024; kv.heads = 2; kv.head_dim = 128;
+                kv.page_size = 64; kv.pooled_rows = layer ? 0 : 9; kv.idx_dim = 64;
+                kv.k = pattern(layer == 0 && big ? (17u << 20) + 5 : 4096, uint8_t(seed + layer));   // > 16 MiB: in pieces
+                kv.v = pattern(4096 + layer, uint8_t(seed + 10 + layer));
+                kv.k_scale = pattern(layer ? 0 : 512, uint8_t(seed + 20));
+                kv.v_scale = pattern(512, uint8_t(seed + 30));
+                kv.pooled = pattern(layer ? 0 : 9 * 64 * 4, uint8_t(seed + 40));
+                s.kv.push_back(std::move(kv));
+            }
+        };
+        auto kv_img = [&](std::vector<int32_t> ids, uint8_t seed, bool split) {
+            SavedConversation s;
+            s.live.ids = ids;
+            s.live.gdn.assign(4096, seed);
+            ConversationCheckpoint c;
+            c.ids = {ids[0]};
+            c.gdn.assign(512, uint8_t(seed + 1));
+            s.checkpoints.push_back(c);
+            SavedConversation stage = s;
+            layers(s, seed, true);
+            if (split) {
+                stage.live.gdn.assign(4096, uint8_t(seed + 2));
+                layers(stage, uint8_t(seed + 50), false);
+                s.stage_images.push_back(std::move(stage));
+            }
+            return s;
+        };
+        auto parts_of = [](const ConversationKv& kv) {
+            return std::array<const ConversationBuffer*, 5>{&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled};
+        };
+        auto sources_of = [&](const SavedConversation& img) {
+            std::vector<SessionKvSource> out;
+            for (const auto& kv : img.kv) {
+                SessionKvSource s;
+                s.format = kv.format; s.cells = kv.cells; s.heads = kv.heads; s.head_dim = kv.head_dim;
+                s.page_size = kv.page_size; s.pooled_rows = kv.pooled_rows; s.idx_dim = kv.idx_dim;
+                const auto parts = parts_of(kv);
+                for (size_t p = 0; p < 5; ++p) s.sizes[p] = parts[p]->size();
+                s.read = [parts](size_t part, size_t offset, void* dst, size_t n) { return parts[part]->read(dst, offset, n); };
+                s.error = [] { return std::string("source failed"); };
+                out.push_back(std::move(s));
+            }
+            return out;
+        };
+        using Bytes = std::vector<uint8_t>;
+        auto targets_for = [&](const SavedConversation& img, std::vector<std::array<Bytes, 5>>& into) {
+            into.assign(img.kv.size(), {});
+            std::vector<SessionKvTarget> out;
+            for (size_t j = 0; j < img.kv.size(); ++j) {
+                const auto& kv = img.kv[j];
+                SessionKvTarget t;
+                t.format = kv.format; t.cells = kv.cells; t.heads = kv.heads; t.head_dim = kv.head_dim;
+                t.page_size = kv.page_size; t.pooled_rows = kv.pooled_rows; t.idx_dim = kv.idx_dim;
+                const auto parts = parts_of(kv);
+                for (size_t p = 0; p < 5; ++p) { t.sizes[p] = parts[p]->size(); into[j][p].assign(t.sizes[p], 0); }
+                std::array<Bytes, 5>* layer = &into[j];
+                t.write = [layer](size_t part, size_t offset, const void* src, size_t n) {
+                    if (offset + n > (*layer)[part].size()) return false;
+                    std::memcpy((*layer)[part].data() + offset, src, n);
+                    return true;
+                };
+                t.error = [] { return std::string("target failed"); };
+                out.push_back(std::move(t));
+            }
+            return out;
+        };
+        auto holds = [&](const SavedConversation& img, const std::vector<std::array<Bytes, 5>>& got) {
+            if (got.size() != img.kv.size()) return false;
+            for (size_t j = 0; j < img.kv.size(); ++j) {
+                const auto parts = parts_of(img.kv[j]);
+                for (size_t p = 0; p < 5; ++p) {
+                    Bytes want(parts[p]->size());
+                    if (!parts[p]->read(want.data(), 0, want.size()) || want != got[j][p]) return false;
+                }
+            }
+            return true;
+        };
+        auto meta_of = [](SavedConversation img) {
+            img.kv.clear();
+            for (auto& st : img.stage_images) st.kv.clear();
+            return img;
+        };
+        auto file_bytes = [](const fs::path& p) {
+            std::ifstream f(p, std::ios::binary);
+            return Bytes(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        };
+        const SessionFileIdentity id{11, 22};
+        std::string err;
+        ConversationSpill sp;
+        check(sp.open(root / "stream-root", 512ull << 20, err), "the streamed tier opens");
+        for (const bool split : {false, true}) {
+            const SavedConversation full = kv_img({1, 2, 3}, split ? 60 : 30, split);
+            std::vector<std::vector<SessionKvSource>> sources = {sources_of(full)};
+            for (const auto& st : full.stage_images) sources.push_back(sources_of(st));
+            uint64_t a = 0, b = 0;
+            check(sp.put(full, id, err, &a) && sp.find(a), "put: the captured image");
+            const fs::path d = sp.dir();
+            std::string na = "conv-" + std::to_string(a);
+            const Bytes fa = file_bytes(d / (na + ".session")), fa1 = split ? file_bytes(d / (na + ".s1.session")) : Bytes();
+            const uint64_t bytes_a = sp.find(a)->bytes;
+            check(sp.put_streamed(meta_of(full), sources, id, err, &b) && b == a + 1, "put_streamed: the same conversation");
+            check(!sp.find(a) && !fs::exists(d / (na + ".session")) && sp.size() == 1,
+                  "put_streamed: the entry it extends (the same tokens) goes, as with put()");
+            const std::string nb = "conv-" + std::to_string(b);
+            bool same_files = file_bytes(d / (nb + ".session")) == fa && fa.size() > (17u << 20);
+            if (split) same_files = same_files && !fa1.empty() && file_bytes(d / (nb + ".s1.session")) == fa1;
+            check(same_files, split ? "put_streamed: a split's files are put()'s, byte for byte"
+                                    : "put_streamed: the file is put()'s, byte for byte");
+            check(sp.find(b) && sp.find(b)->bytes == bytes_a, "put_streamed: the same bytes counted");
+
+            std::vector<std::array<Bytes, 5>> got0, got1;
+            std::vector<std::vector<SessionKvTarget>> kv = {targets_for(full, got0)};
+            if (split) kv.push_back(targets_for(full.stage_images[0], got1));
+            SavedConversation back;
+            const size_t before = sp.size();
+            check(sp.take_serial(b, id, {}, back, err, &kv), "take_serial with K/V targets");
+            check(holds(full, got0) && (!split || holds(full.stage_images[0], got1)),
+                  "the targets hold every stage's K/V exactly");
+            check(back.live.ids == full.live.ids && back.live.gdn == full.live.gdn && back.checkpoints.size() == 1 &&
+                  back.kv.size() == full.kv.size() && back.kv[0].k.size() == 0 &&
+                  back.stage_images.size() == full.stage_images.size() &&
+                  (!split || (back.stage_images[0].live.gdn == full.stage_images[0].live.gdn &&
+                              back.stage_images[0].kv[0].k.size() == 0)),
+                  "the running state and checkpoints come back in RAM, no K/V");
+            check(sp.size() == before - 1 && !fs::exists(d / (nb + ".session")) && !fs::exists(d / (nb + ".s1.session")),
+                  "the streamed take removes the entry and its files");
+
+            check(sp.put(full, id, err, &a), "put: the image again, for the refused takes");
+            na = "conv-" + std::to_string(a);
+            std::vector<std::array<Bytes, 5>> bad;
+            std::vector<std::vector<SessionKvTarget>> wrong = {targets_for(full, bad)};
+            if (split) {
+                SavedConversation keep = back;
+                check(!sp.take_serial(a, id, {}, back, err, &wrong) && err.find("stage count") != std::string::npos,
+                      "a K/V target list per stage: another stage count is refused");
+                check(back.live.ids == keep.live.ids && !sp.find(a) && !fs::exists(d / (na + ".session")),
+                      "the refused take leaves `out` alone and the entry goes");
+            } else {
+                wrong[0][0].sizes[0] += 1;
+                check(!sp.take_serial(a, id, {}, back, err, &wrong) && err.find("size differs") != std::string::npos,
+                      "a K/V part of another size is refused");
+                check(!sp.find(a) && !fs::exists(d / (na + ".session")), "the refused take's entry goes");
+            }
+        }
+        std::vector<std::vector<SessionKvSource>> one = {sources_of(kv_img({4}, 1, false))};
+        check(!sp.put_streamed(meta_of(kv_img({4}, 1, true)), one, id, err) && err.find("per stage") != std::string::npos &&
+              sp.size() == 0, "put_streamed: one source list per stage, or nothing is written");
+        sp.close();
+        // --conversation-spill-persist: a streamed entry gets its index file like put()'s, so the next start adopts it
+        const fs::path proot = root / "stream-persist";
+        for (const bool split : {false, true}) {
+            fs::remove_all(proot, ec);
+            const SavedConversation full = kv_img({5, 6, 7, 8}, split ? 90 : 70, split);
+            std::vector<std::vector<SessionKvSource>> sources = {sources_of(full)};
+            for (const auto& st : full.stage_images) sources.push_back(sources_of(st));
+            uint64_t b = 0;
+            size_t adopted = 99;
+            ConversationSpill ps;
+            check(ps.open(proot, 512ull << 20, err, nullptr, &id, &adopted) && ps.persistent() && adopted == 0 &&
+                  ps.put_streamed(meta_of(full), sources, id, err, &b), "persist: put_streamed into the stable folder");
+            const fs::path d = ps.dir();
+            const std::string nb = "conv-" + std::to_string(b);
+            check(fs::exists(d / (nb + ".meta")) && (!split || fs::exists(d / (nb + ".s1.session"))),
+                  split ? "persist: a streamed split entry has its index file" : "persist: a streamed entry has its index file");
+            const uint64_t bytes_b = ps.find(b) ? ps.find(b)->bytes : 0;
+            ps.close();
+            ConversationSpill again;
+            check(again.open(proot, 512ull << 20, err, nullptr, &id, &adopted) && adopted == 1 && again.size() == 1 &&
+                  again.bytes() == bytes_b, "persist: the next start adopts the streamed entry");
+            const auto m = again.best(full.live.ids, {}, full.cvec);
+            check(m.tokens > 0 && m.serial == b, "persist: it matches its tokens after the restart");
+            std::vector<std::array<Bytes, 5>> got0, got1;
+            std::vector<std::vector<SessionKvTarget>> kv = {targets_for(full, got0)};
+            if (split) kv.push_back(targets_for(full.stage_images[0], got1));
+            SavedConversation back;
+            check(m.tokens > 0 && again.take_serial(m.serial, id, {}, back, err, &kv) && holds(full, got0) &&
+                  (!split || holds(full.stage_images[0], got1)) && back.live.gdn == full.live.gdn,
+                  "persist: the adopted streamed entry streams back whole");
+            again.close();
         }
     }
     fs::remove_all(root, ec);

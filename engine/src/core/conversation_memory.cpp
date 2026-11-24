@@ -26,6 +26,9 @@
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #include <sys/sysctl.h>
+#elif defined(__linux__)
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 namespace strata::core {
@@ -255,23 +258,29 @@ bool group_dirs(const fs::path& root, const std::string& group, std::vector<fs::
     return true;
 }
 
+// /proc/self/cgroup: the v2 group ("0::/a/b") and the v1 memory controller's group, each when there is one.  False
+// when the file cannot be opened.
+bool own_groups(const std::string& self_cgroup, std::optional<std::string>& v2_group,
+                std::optional<std::string>& v1_group) {
+    std::ifstream groups(self_cgroup);
+    if (!groups) return false;
+    std::string line;
+    while (std::getline(groups, line)) {
+        const size_t c1 = line.find(':'), c2 = c1 == std::string::npos ? c1 : line.find(':', c1 + 1);
+        if (c2 == std::string::npos) continue;
+        const std::string controllers = line.substr(c1 + 1, c2 - c1 - 1), group = line.substr(c2 + 1);
+        if (line.compare(0, c1, "0") == 0 && controllers.empty()) { v2_group = group; continue; }
+        std::istringstream names(controllers);
+        for (std::string name; std::getline(names, name, ',');)
+            if (name == "memory") v1_group = group;
+    }
+    return true;
+}
+
 bool scan_cgroups(const MemoryProbePaths& paths, CgroupScan& out) {
     std::optional<std::string> v2_group, v1_group;
-    std::ifstream groups(paths.self_cgroup);
-    if (!groups) {
+    if (!own_groups(paths.self_cgroup, v2_group, v1_group))
         v2_group = "/";   // no /proc/self/cgroup: the mount's own top group is still readable
-    } else {
-        std::string line;
-        while (std::getline(groups, line)) {
-            const size_t c1 = line.find(':'), c2 = c1 == std::string::npos ? c1 : line.find(':', c1 + 1);
-            if (c2 == std::string::npos) continue;
-            const std::string controllers = line.substr(c1 + 1, c2 - c1 - 1), group = line.substr(c2 + 1);
-            if (line.compare(0, c1, "0") == 0 && controllers.empty()) { v2_group = group; continue; }
-            std::istringstream names(controllers);
-            for (std::string name; std::getline(names, name, ',');)
-                if (name == "memory") v1_group = group;
-        }
-    }
     std::vector<fs::path> dirs;
     if (v2_group) {
         if (!group_dirs(paths.cgroup_root, *v2_group, dirs)) return false;
@@ -445,5 +454,28 @@ std::optional<uint64_t> available_host_bytes() {
     if (!reading) return {};
     return reading->available;
 }
+
+bool reclaim_own_cgroup(uint64_t bytes, const MemoryProbePaths& paths) {
+#if defined(__linux__)
+    std::optional<std::string> v2_group, v1_group;
+    if (bytes == 0 || !own_groups(paths.self_cgroup, v2_group, v1_group) || !v2_group) return false;
+    std::vector<fs::path> dirs;
+    if (!group_dirs(paths.cgroup_root, *v2_group, dirs) || dirs.empty()) return false;
+    // the nearest group this process can see is its own (a container's namespace root at worst); never created here
+    const std::string path = (dirs.back() / "memory.reclaim").string();
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    const std::string n = std::to_string(bytes);
+    const ssize_t wrote = ::write(fd, n.data(), n.size());
+    ::close(fd);
+    return wrote == (ssize_t) n.size();
+#else
+    (void) bytes;
+    (void) paths;
+    return false;
+#endif
+}
+
+bool reclaim_own_cgroup(uint64_t bytes) { return reclaim_own_cgroup(bytes, MemoryProbePaths{}); }
 
 } // namespace strata::core

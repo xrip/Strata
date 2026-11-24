@@ -540,6 +540,37 @@ int main() {
         const auto r = g.sample();
         check(r && r->credit == 6 * GiB && r->available == 8 * GiB && r->source == MemorySource::cgroup, "v1: 64 - (62 - (7 - 1))");
     }
+    // reclaim_own_cgroup(): the request goes to this process's own v2 group's memory.reclaim, and nowhere else
+    {
+        Fixture g;
+        g.self("0::/user.slice/app.scope");
+        g.put("cgroup/user.slice/app.scope/memory.reclaim", "");
+        g.put("cgroup/user.slice/memory.reclaim", "");
+        check(!reclaim_own_cgroup(0, g.paths()), "reclaim: nothing asked, nothing written");
+#if defined(__linux__)
+        check(reclaim_own_cgroup(1536 * MiB, g.paths()), "reclaim: written to the own group");
+        std::string own, parent;
+        std::getline(std::ifstream(g.dir / "cgroup/user.slice/app.scope/memory.reclaim"), own);
+        std::getline(std::ifstream(g.dir / "cgroup/user.slice/memory.reclaim"), parent);
+        check(own == std::to_string(1536 * MiB), "reclaim: the byte count, as a number");
+        check(parent.empty(), "reclaim: the parent group is left alone");
+#else
+        check(!reclaim_own_cgroup(MiB, g.paths()), "reclaim: Linux only");
+#endif
+    }
+    {
+        Fixture g;
+        g.self("0::/user.slice/app.scope");
+        g.put("cgroup/user.slice/app.scope/memory.current", GiB);
+        check(!reclaim_own_cgroup(MiB, g.paths()), "reclaim: no memory.reclaim (a kernel before 5.19): false");
+        check(!fs::exists(g.dir / "cgroup/user.slice/app.scope/memory.reclaim"), "reclaim: the file is never created");
+    }
+    {
+        Fixture g;
+        g.self("4:memory:/m");
+        g.put("cgroup/memory/m/memory.reclaim", "");
+        check(!reclaim_own_cgroup(MiB, g.paths()), "reclaim: cgroup v1 has no memory.reclaim to ask");
+    }
     // the process-wide setting and the real files
     {
         check(memory_limit_bytes() == 0, "no cap by default");
