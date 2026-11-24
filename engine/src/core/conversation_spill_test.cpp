@@ -338,7 +338,7 @@ int main() {
         }
         sp.close();
     }
-    {   // fork: a layer split's conversation (one file per stage), in a per-process folder and in the persistent one
+    {   // a layer split's conversation (one file per stage), in a per-process folder and in the persistent one
         auto split_img = [](std::vector<int32_t> ids, uint8_t fill) {
             SavedConversation s;
             s.live.ids = ids;

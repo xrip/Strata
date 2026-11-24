@@ -1116,8 +1116,8 @@ struct Options {
     /// --conversation-spill-persist: the tier's folder is `<root>/fp-<model fingerprint>` and its entries survive a restart (a reboot): at
     /// start those of the current model and settings are adopted and indexed, the folders of other fingerprints are removed.  No time
     /// limit: an entry goes when the size cap needs room (least recently used first) or when a longer spill of the same conversation
-    /// replaces it.  Off by default (a per-process folder, removed at the end).  Fork: a layer split's conversations are kept too
-    /// (one file per stage), and QUIT writes the current and every RAM-parked conversation there first.
+    /// replaces it.  Off by default (a per-process folder, removed at the end).  A layer split's conversations are kept too (one
+    /// file per stage), and QUIT writes the current and every RAM-parked conversation there first.
     bool conversation_spill_persist = false;
     int64_t conversation_spill_mib = -1;
     bool session_save_reclaim = false;
@@ -13960,7 +13960,7 @@ int main(int argc, char** argv) {
         // session file into this process's own folder under the data folder, instead of being dropped; a later request whose
         // prompt it serves best reads it back.  Only on pressure: a park that fits in RAM never touches the disk.  A layer split's
         // conversation is one file per stage.  The file format, its identity and its read limits are the session SAVE / RESTORE's.
-        // --conversation-spill-persist (fork): QUIT writes the current and every RAM-parked conversation there first.
+        // --conversation-spill-persist: QUIT writes the current and every RAM-parked conversation there first.
         strata::core::ConversationSpill spill;
         std::optional<strata::core::SessionFileIdentity> spill_id;
         strata::core::SpillCost spill_cost;   // only conversations whose re-read costs more than the disk round trip go there
@@ -14010,7 +14010,7 @@ int main(int argc, char** argv) {
                                                    (adopted == 1 ? "" : "s") + " adopted from the last run, " +
                                                    std::to_string(spill.bytes() >> 20) + " MiB").c_str() : "");
                 if (spill.persistent()) {
-                    // fork: the engine ends only through its stdin (the server's QUIT, or EOF when the server is gone), after the save
+                    // the engine ends only through its stdin (the server's QUIT, or EOF when the server is gone), after the save
                     // at QUIT: Ctrl+C, a shutdown's SIGTERM to every process and a closed terminal's SIGHUP reach it too
                     std::signal(SIGINT, SIG_IGN);
                     std::signal(SIGTERM, SIG_IGN);
@@ -23861,7 +23861,7 @@ int main(int argc, char** argv) {
             }
         }
         save_profile("exit");   // #477: QUIT, or the server closed stdin
-        if (spill.persistent() && spill_writer) {   // fork, --conversation-spill-persist: every conversation goes to the SSD tier first
+        if (spill.persistent() && spill_writer) {   // --conversation-spill-persist: every conversation goes to the SSD tier first
             const auto t0 = Clock::now();
             park_current(0);
             while (conversations.evict_oldest()) {}   // (each through the evict sink to the background writer; pinned ones stay)
