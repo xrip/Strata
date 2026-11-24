@@ -557,13 +557,17 @@ public:
     }
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
                            const std::vector<ConversationCheckpoint>& checkpoints, bool cvec,
-                           std::vector<size_t>* dropped_tokens = nullptr) {
+                           std::vector<size_t>* dropped_tokens = nullptr, std::vector<const char*>* rules = nullptr) {
         size_t dropped = 0;
         for (size_t i = 0; i < entries_.size();) {
             const auto& e = entries_[i];
-            if (!(guarded_ != 0 && serials_[i] == guarded_) &&
-                (superseded_at(e, ids, images, checkpoints, cvec) > 0 || (e.cvec == cvec && live_extended_by(e, ids, images)))) {
+            bool by_chain = false;
+            const bool at = superseded_at(e, ids, images, checkpoints, cvec, &by_chain) > 0;
+            const bool prefix = e.cvec == cvec && live_extended_by(e, ids, images);
+            if (!(guarded_ != 0 && serials_[i] == guarded_) && (at || prefix)) {
                 if (dropped_tokens) dropped_tokens->push_back(e.live.ids.size());
+                // which rule: #342's checkpoint chain, #6833's live prefix, or only #3404's 90 % share
+                if (rules) rules->push_back(by_chain ? "checkpoint" : prefix ? "prefix" : "share90");
                 bytes_ -= e.bytes();
                 erase(i);
                 ++dropped;
@@ -658,7 +662,7 @@ private:
     // How many of `e`'s tokens the outgoing conversation holds when it supersedes `e` (drop_superseded), else 0.
     static size_t superseded_at(const SavedConversation& e, const std::vector<int32_t>& ids,
                                 const std::vector<ConversationImageKey>& images,
-                                const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
+                                const std::vector<ConversationCheckpoint>& checkpoints, bool cvec, bool* by_chain = nullptr) {
         const ConversationCheckpoint* deepest = nullptr;
         for (const auto& c : e.checkpoints)
             if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
@@ -666,6 +670,7 @@ private:
         bool held = deepest->ids == ids && deepest->imgs == images;
         for (const auto& k : checkpoints)
             if (!held && k.ids == deepest->ids && k.imgs == deepest->imgs) held = true;
+        if (by_chain) *by_chain = held;
         if (held) return deepest->ids.size();
         const auto& own = e.live.ids;
         const size_t shared = std::mismatch(own.begin(), own.end(), ids.begin(), ids.end()).first - own.begin();
