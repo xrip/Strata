@@ -26,8 +26,8 @@ and a 172K prompt read cold, then 6 x 512 tokens of decode at ~8K context; range
 | **Live config faster than stock** | **+56 %** (36 % less time) | **+90 %** (47 % less time) | **+14 %** | 13 % less |
 
 The longer the prompt, the bigger the gain: a 172K prompt that takes stock Strata 2 min 8 s is read here in 1 min 7 s.
-**Live now** (since 2026-11-24): upstream 0.2.21 (engine 0.1.67) with the patches and this config: 64K read 28.2 s, 172K
-65.4 s, ~30 ms per verify window at 8K (docs/FORK.md has the last gate; every earlier one is in the tag `fork-main-2026-11-24`). Both arms of the table keep the same model and
+**Live now** (since 2026-11-26): upstream 0.2.22 (engine 0.1.69) with the patches and this config: 64K read 28.2 s, 172K
+65.4 s, ~30 ms per verify window at 8K (measured on 0.2.21; 0.2.22 has the same sm_75 kernels; docs/FORK.md has the last gate; every earlier one is in the tag `fork-main-2026-11-24`). Both arms of the table keep the same model and
 capacity settings (393K context with YaRN, MTP drafts, int8 KV, the conversation cache, pictures on the third card); stock
 upstream runs `STRATA_GDN_TC=1`, which leaves sm_75 on the old scan. Decode of one config moves ~2 % from start to start
 here (where the expert memory lands in RAM).

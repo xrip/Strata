@@ -31,7 +31,13 @@ Then the speed gate when our path changed: `~/opt-avx1/chunk.sh A N N A` (64K an
 
 ## Last sync
 
-Upstream 0.2.21 (`d46f5f268`, engine 0.1.67), 2026-11-24, live. Gate `A N N A` against 0.1.66: 64K 28.23 / 28.24 s
+Upstream 0.2.22 (`c23477403`, engine 0.1.69), 2026-11-26, live; no conflicts. No speed gate: no CUDA kernel or decode change on our
+path (sm_75 SASS of the new binary against 0.1.67: 3086 of 3086 kernels identical). New opt-in `STRATA_SPLIT_LEND_RESERVE`
+(#7089) acts only on a RAM-budgeted expert copy; ours is the whole-pack arena, so it does nothing here. Server: a request that
+names no sampling gets the model card's sampling again under `--mtp` (#7070; greedy stays for Qwen3.6 only); our config sets
+`--conversation-cache-mib`, so the RAM-sized cache (#7044) does not apply.
+
+Upstream 0.2.21 (`d46f5f268`, engine 0.1.67), 2026-11-24. Gate `A N N A` against 0.1.66: 64K 28.23 / 28.24 s
 against 27.71 / 28.24, 172K 65.24 / 65.53 against 64.00 / 65.31, ms per verify window 30.02 / 29.73 against 30.17 / 30.16:
 equal. GDN `tc->tc PASS h=aea57e39`, `mmvq_il_parity` OK, the conversation suites pass.
 
